@@ -19,10 +19,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "bausatz>=0.1",  # the component framework (extracted from this repo; re-exported via core/components)
-    "pydantic>=2",
+    "bausatz>=0.3,<0.4",  # the component framework (typed Config children; 0.x minors may break)
+    "pydantic>=2.7",  # bausatz 0.3's floor (to_dict uses model_dump(serialize_as_any=...))
     "pydantic-settings>=2",
-    "sqlalchemy>=2",
+    "sqlalchemy[asyncio]>=2",  # the asyncio extra pulls greenlet — SQLAlchemy 2.1 no longer bundles it
     "aiosqlite",
     "numpy",
     "sqlite-vec",  # §8 retrieval index (dense KNN) on the SQLite/embedded path

@@ -149,14 +149,14 @@ def test_retriever_keys_disambiguate_duplicates():
             retrievers=[{"class_name": "dense"}, {"class_name": "dense"}, {"class_name": "sparse"}]
         )
     )
-    pipe._ensure_children()
+    pipe.ensure_built()
     assert pipe._retriever_keys() == ["dense", "dense#1", "sparse"]  # duplicate disambiguated by suffix
     named = RetrievalPipeline(
         RetrievalPipeline.Config(
             retrievers=[{"class_name": "dense", "name": "primary"}, {"class_name": "dense", "name": "backup"}]
         )
     )
-    named._ensure_children()
+    named.ensure_built()
     assert named._retriever_keys() == ["primary", "backup"]  # explicit names used as-is
 
 

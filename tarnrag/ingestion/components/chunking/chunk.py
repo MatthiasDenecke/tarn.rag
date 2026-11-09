@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -20,6 +20,7 @@ from tarnrag.contracts import Element, ElementKind, PipelineItem, Span, Structur
 from bausatz import ComponentFactory
 from tarnrag.core.hashing import compute_content_hash
 from tarnrag.ingestion.components.chunking.chunker import Chunker
+from tarnrag.ingestion.components.chunking.structure_aware import StructureAwareChunker
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
 
@@ -28,8 +29,9 @@ class ChunkStage(PipelineStage):
 
     class Config(PipelineStage.Config):
         class_name: Literal["Chunk"] = "Chunk"
-        # The chunker component spec (class_name + options); config-driven, like LoadAndParse's routes.
-        chunker: dict[str, Any] = Field(default_factory=lambda: {"class_name": "structure_aware"})
+        # The chunker child (a spec's ``class_name`` + options, validated into its concrete Config);
+        # config-driven, like LoadAndParse's routes.
+        chunker: Chunker.Config = Field(default_factory=StructureAwareChunker.Config)
 
     config: ChunkStage.Config
 
@@ -39,10 +41,10 @@ class ChunkStage(PipelineStage):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         """Build the chunker child through the framework factory (the hook containers override)."""
-        self._chunker = factory.create_as(self.config.chunker, Chunker)
+        self._chunker = factory.build_as(self.config.chunker, Chunker)
 
     def process(self, item: PipelineItem) -> Iterator[PipelineItem]:
-        self._ensure_children()
+        self.ensure_built()
         document = item.document or self._synthesize(item)
         chunks = self._chunker.chunk(document)
         if not chunks:

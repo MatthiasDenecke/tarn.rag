@@ -10,7 +10,7 @@ every other component (e.g. ``{"class_name": "Enrich", "enrichers": [{"class_nam
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -25,8 +25,8 @@ class EnrichStage(PipelineStage):
 
     class Config(PipelineStage.Config):
         class_name: Literal["Enrich"] = "Enrich"
-        # ordered enricher component specs (class_name + options); the config-driven enrichment pipeline.
-        enrichers: list[dict[str, Any]] = Field(default_factory=list)
+        # ordered enricher children (specs validated into their Configs); the config-driven enrichment pipeline.
+        enrichers: list[Enricher.Config] = Field(default_factory=list)
 
     config: EnrichStage.Config
 
@@ -36,10 +36,10 @@ class EnrichStage(PipelineStage):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         """Build the enricher children through the framework factory (the container hook)."""
-        self._enrichers = [factory.create_as(spec, Enricher) for spec in self.config.enrichers]
+        self._enrichers = [factory.build_as(cfg, Enricher) for cfg in self.config.enrichers]
 
     def process(self, item: PipelineItem) -> Iterator[PipelineItem]:
-        self._ensure_children()
+        self.ensure_built()
         if item.document is not None:
             for enricher in self._enrichers:
                 enricher.enrich(item.document)  # mutates the document in place

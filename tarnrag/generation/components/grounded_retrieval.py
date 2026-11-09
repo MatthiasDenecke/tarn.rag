@@ -15,14 +15,18 @@ It lives in its own module (not ``reasoner.py``) because it imports both the ``R
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
 from bausatz import ComponentFactory
 from tarnrag.core.resources.llm import Prompt
-from tarnrag.generation.components.grounding import GroundingChecker, Verdict
+from tarnrag.generation.components.grounding import (
+    GroundingChecker,
+    HeuristicGroundingChecker,
+    Verdict,
+)
 from tarnrag.generation.components.reasoner import _READ_SYSTEM, ReasonedAnswer, Reasoner
 from tarnrag.generation.context import GenerationContext
 from tarnrag.retrieval.types import Query
@@ -36,8 +40,8 @@ class GroundedRetrievalReasoner(Reasoner):
 
     class Config(Reasoner.Config):
         class_name: Literal["grounded_retrieval"] = "grounded_retrieval"
-        grounding_checker: dict[str, Any] = Field(
-            default_factory=lambda: {"class_name": "heuristic_grounding"}
+        grounding_checker: GroundingChecker.Config = Field(
+            default_factory=HeuristicGroundingChecker.Config
         )
         max_hops: int = 3
         top_k: int = 8  # passages retrieved for the question and for each follow-up claim
@@ -50,10 +54,10 @@ class GroundedRetrievalReasoner(Reasoner):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         """Build the grounding-checker child (the γ signal that drives re-retrieval)."""
-        self._grounding = factory.create_as(self.config.grounding_checker, GroundingChecker)
+        self._grounding = factory.build_as(self.config.grounding_checker, GroundingChecker)
 
     async def reason(self, query: Query, ctx: GenerationContext) -> ReasonedAnswer:
-        self._ensure_children()
+        self.ensure_built()
         evidence: list[RetrievalResult] = []
         seen: set[str] = set()
         self._accumulate(evidence, seen, await ctx.retrieval.search(replace(query, top_k=self.config.top_k)))

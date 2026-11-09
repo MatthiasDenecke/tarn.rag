@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from abc import abstractmethod
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -171,7 +171,7 @@ class CascadingGroundingChecker(GroundingChecker):
 
     class Config(GroundingChecker.Config):
         class_name: Literal["cascading_grounding"] = "cascading_grounding"
-        checkers: list[dict[str, Any]] = Field(default_factory=list)  # child checkers, cheap → expensive
+        checkers: list[GroundingChecker.Config] = Field(default_factory=list)  # child checkers, cheap → expensive
 
     config: CascadingGroundingChecker.Config
 
@@ -180,10 +180,10 @@ class CascadingGroundingChecker(GroundingChecker):
         self._checkers: list[GroundingChecker] = []
 
     def _build_children(self, factory: ComponentFactory) -> None:
-        self._checkers = [factory.create_as(spec, GroundingChecker) for spec in self.config.checkers]
+        self._checkers = [factory.build_as(cfg, GroundingChecker) for cfg in self.config.checkers]
 
     async def check(self, reasoned: ReasonedAnswer, ctx: GenerationContext) -> list[Verdict]:
-        self._ensure_children()
+        self.ensure_built()
         verdicts: list[Verdict] = [Verdict.UNCERTAIN] * len(reasoned.steps)
         for checker in self._checkers:
             pending = [i for i, v in enumerate(verdicts) if v is Verdict.UNCERTAIN]

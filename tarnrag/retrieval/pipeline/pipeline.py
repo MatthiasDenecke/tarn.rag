@@ -13,16 +13,16 @@ cross-encoder construction, then delegates.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
 from bausatz import ComponentFactory
-from tarnrag.retrieval.components.fuser import Fuser
+from tarnrag.retrieval.components.fuser import Fuser, IdentityFuser
 from tarnrag.retrieval.components.merger import Merger
 from tarnrag.retrieval.components.reranker import Reranker
-from tarnrag.retrieval.components.retriever import RetrievalContext, Retriever
+from tarnrag.retrieval.components.retriever import DenseRetriever, RetrievalContext, Retriever
 from tarnrag.retrieval.pipeline.searcher import Searcher
 from tarnrag.retrieval.types import Query, SearchTrace
 
@@ -32,10 +32,12 @@ class RetrievalPipeline(Searcher):
 
     class Config(Searcher.Config):
         class_name: Literal["retrieval_pipeline"] = "retrieval_pipeline"
-        retrievers: list[dict[str, Any]] = Field(default_factory=lambda: [{"class_name": "dense"}])
-        fuser: dict[str, Any] = Field(default_factory=lambda: {"class_name": "identity"})
-        merger: dict[str, Any] | None = None  # optional auto-merging step (none ⇒ skipped)
-        reranker: dict[str, Any] | None = None  # optional second-pass rerank (none ⇒ skipped)
+        # Typed children: each spec validates into its family's Config (a foreign child — e.g. a fuser
+        # in the retrievers list — is rejected when the pipeline spec is validated).
+        retrievers: list[Retriever.Config] = Field(default_factory=lambda: [DenseRetriever.Config()])
+        fuser: Fuser.Config = Field(default_factory=IdentityFuser.Config)
+        merger: Merger.Config | None = None  # optional auto-merging step (none ⇒ skipped)
+        reranker: Reranker.Config | None = None  # optional second-pass rerank (none ⇒ skipped)
 
     config: RetrievalPipeline.Config
 
@@ -48,17 +50,17 @@ class RetrievalPipeline(Searcher):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         """Build the retriever + fuser (+ optional merger / reranker) children through the factory."""
-        self._retrievers = [factory.create_as(spec, Retriever) for spec in self.config.retrievers]
-        self._fuser = factory.create_as(self.config.fuser, Fuser)
-        self._merger = factory.create_as(self.config.merger, Merger) if self.config.merger else None
+        self._retrievers = [factory.build_as(cfg, Retriever) for cfg in self.config.retrievers]
+        self._fuser = factory.build_as(self.config.fuser, Fuser)
+        self._merger = factory.build_as(self.config.merger, Merger) if self.config.merger else None
         self._reranker = (
-            factory.create_as(self.config.reranker, Reranker) if self.config.reranker else None
+            factory.build_as(self.config.reranker, Reranker) if self.config.reranker else None
         )
 
     async def search(
         self, query: Query, ctx: RetrievalContext, trace: SearchTrace | None = None
     ) -> list[RetrievalResult]:
-        self._ensure_children()
+        self.ensure_built()
         lists = await asyncio.gather(*(r.retrieve(query, ctx) for r in self._retrievers))
         keys = self._retriever_keys()
         per_retriever = dict(zip(keys, lists))

@@ -19,24 +19,29 @@ import json
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
 from tarnrag.contracts import PipelineItem
 from bausatz import ComponentFactory
 from tarnrag.ingestion.components.extraction.extractor import Extractor, Source
+from tarnrag.ingestion.components.extraction.html import HtmlExtractor
+from tarnrag.ingestion.components.extraction.markdown import MarkdownExtractor
+from tarnrag.ingestion.components.extraction.pdf import PdfTextExtractor
+from tarnrag.ingestion.components.extraction.plain_text import PlainTextExtractor
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
-# Default source_kind -> extractor spec. Config-driven: override per format via Settings.components.
-_DEFAULT_ROUTES: dict[str, dict[str, Any]] = {
-    "text": {"class_name": "plain_text"},
-    "txt": {"class_name": "plain_text"},
-    "markdown": {"class_name": "markdown"},
-    "md": {"class_name": "markdown"},
-    "html": {"class_name": "html"},
-    "htm": {"class_name": "html"},
-    "pdf": {"class_name": "pdf_text"},  # the fast tier; route to {"class_name": "docling"} for high-fidelity
+# Default source_kind -> extractor Config. Config-driven: override per format via Settings.components
+# (a route is any extractor spec — ``{"class_name": "docling", ...}`` for high-fidelity PDFs).
+_DEFAULT_ROUTES: dict[str, type[Extractor.Config]] = {
+    "text": PlainTextExtractor.Config,
+    "txt": PlainTextExtractor.Config,
+    "markdown": MarkdownExtractor.Config,
+    "md": MarkdownExtractor.Config,
+    "html": HtmlExtractor.Config,
+    "htm": HtmlExtractor.Config,
+    "pdf": PdfTextExtractor.Config,  # the fast tier
 }
 
 
@@ -53,12 +58,13 @@ class LoadAndParseStage(PipelineStage):
 
     class Config(PipelineStage.Config):
         class_name: Literal["LoadAndParse"] = "LoadAndParse"
-        # source_kind -> extractor spec (class_name + options); the config-driven route map.
-        routes: dict[str, dict[str, Any]] = Field(
-            default_factory=lambda: {k: dict(v) for k, v in _DEFAULT_ROUTES.items()}
+        # source_kind -> extractor child (a spec's class_name + options, validated into its Config);
+        # the config-driven route map.
+        routes: dict[str, Extractor.Config] = Field(
+            default_factory=lambda: {kind: config() for kind, config in _DEFAULT_ROUTES.items()}
         )
         # fallback when the source_kind isn't routed.
-        default_extractor: dict[str, Any] = Field(default_factory=lambda: {"class_name": "plain_text"})
+        default_extractor: Extractor.Config = Field(default_factory=PlainTextExtractor.Config)
 
     config: LoadAndParseStage.Config
 
@@ -72,11 +78,11 @@ class LoadAndParseStage(PipelineStage):
         """Build the route extractors as children, through the framework factory (the same hook
         ``Pipeline`` uses for its stages) — so they join the one recursive tree build."""
         self._built = {}
-        self._by_kind = {kind: self._extractor(spec, factory) for kind, spec in self.config.routes.items()}
+        self._by_kind = {kind: self._extractor(cfg, factory) for kind, cfg in self.config.routes.items()}
         self._default = self._extractor(self.config.default_extractor, factory)
 
     def process(self, item: PipelineItem) -> Iterator[PipelineItem]:
-        self._ensure_children()
+        self.ensure_built()
         md = item.metadata
         path = md.get("source_path")
         source_kind = infer_source_kind(path) or md.get("source_type") or ""
@@ -109,13 +115,14 @@ class LoadAndParseStage(PipelineStage):
         """The configured route's extractor (a prebuilt child), or — for the per-document override —
         the named extractor, built once on demand and shared with the routes."""
         if override:
-            return self._extractor({"class_name": override}, ComponentFactory.get())
+            factory = ComponentFactory.get()
+            return self._extractor(factory.validate({"class_name": override}), factory)
         return self._by_kind.get(source_kind, self._default)
 
-    def _extractor(self, spec: dict[str, Any], factory: ComponentFactory) -> Extractor:
-        """Build (or reuse) the extractor for ``spec`` via the factory; dedups identical specs so
+    def _extractor(self, config: Extractor.Config, factory: ComponentFactory) -> Extractor:
+        """Build (or reuse) the extractor for ``config`` via the factory; dedups identical configs so
         several routes share one instance."""
-        key = json.dumps(spec, sort_keys=True)
+        key = json.dumps(config.model_dump(), sort_keys=True)
         if key not in self._built:
-            self._built[key] = factory.create_as(dict(spec), Extractor)
+            self._built[key] = factory.build_as(config, Extractor)
         return self._built[key]

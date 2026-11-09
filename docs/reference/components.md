@@ -12,6 +12,11 @@ retrieval_pipeline:
   fuser: {class_name: identity}
 ```
 
+A spec is validated as a **whole tree** when its engine builds it: every nested child is resolved to
+its concrete config and checked in the same pass, so an unknown option or a misplaced child (say, a
+fuser in the `retrievers` list) fails at startup with its full path (`retrievers.0`), never on the
+first query. Each slot only accepts components of its own family — the sections below.
+
 Tags marked **(default)** are what you get without configuring anything.
 
 ## Ingestion
