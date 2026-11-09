@@ -25,10 +25,9 @@ import asyncio
 import json
 from pathlib import Path
 
+from examples.common import base_settings, corpus, example_db, require_model
 from tarnrag import DocumentStatus, TarnRag
 from tarnrag.core.engine.config import INGESTION_PIPELINE
-
-from examples.common import base_settings, corpus, example_db, require_model
 
 # The ingestion pipeline as data — loaded from the JSON file next to this script.
 PIPELINE_SPEC = json.loads((Path(__file__).resolve().parent / "pipeline.json").read_text())

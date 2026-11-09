@@ -20,10 +20,10 @@ from abc import abstractmethod
 from dataclasses import replace
 from typing import Literal
 
+from bausatz import Component
 from pydantic import Field
 
 from tarnrag.contracts import ChunkFilter
-from bausatz import Component
 from tarnrag.retrieval.types import Query
 
 # ModusQ §5.6 default: the shippable classes every purpose may see; ``third_party_copyrighted`` is

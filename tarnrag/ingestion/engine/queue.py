@@ -145,7 +145,7 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
     @classmethod
     async def connect(
         cls, connection_url: str, *, concurrency: int = 4, dequeue_timeout_seconds: float = 30
-    ) -> "PgQueuerJobQueue":
+    ) -> PgQueuerJobQueue:
         """
         Create an asyncpg pool for ``connection_url`` and wrap it in a pgQueuer driver.
         """
@@ -177,7 +177,7 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
         from pgqueuer.models import Job
 
         @self._qm.entrypoint(ENTRYPOINT)
-        async def _run(pg_job: "Job") -> None:
+        async def _run(pg_job: Job) -> None:
             async with self._slots:
                 await handler(Batch([IngestionJob.model_validate_json(pg_job.payload)]))
 

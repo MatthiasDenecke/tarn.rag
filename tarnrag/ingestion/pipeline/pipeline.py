@@ -12,8 +12,9 @@ from abc import abstractmethod
 from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
-from tarnrag.contracts import PipelineItem
 from bausatz import Component, ComponentFactory
+
+from tarnrag.contracts import PipelineItem
 
 
 class PipelineStage(Component):

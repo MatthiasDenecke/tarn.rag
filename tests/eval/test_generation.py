@@ -2,8 +2,9 @@
 
 import json
 
-from tarnrag.contracts import RetrievalResult
 from bausatz import ComponentFactory
+
+from tarnrag.contracts import RetrievalResult
 from tarnrag.core.resources.llm import StaticLanguageModel
 from tarnrag.eval import (
     GenEvalQuery,
@@ -16,7 +17,13 @@ from tarnrag.eval import (
     sweep_generation,
     token_f1,
 )
-from tarnrag.generation import Citation, GenerationContext, GenerationPipeline, GenerationResult, ProofStep
+from tarnrag.generation import (
+    Citation,
+    GenerationContext,
+    GenerationPipeline,
+    GenerationResult,
+    ProofStep,
+)
 
 
 def _result(chunk_id: str, text: str) -> RetrievalResult:

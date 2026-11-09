@@ -4,18 +4,17 @@ Proves the unification — ingestion writes the §8 index and retrieval reads it
 store (no separate index file). InMemoryJobQueue + SQLite repo + a fake 3-d embedder.
 """
 
-from tarnrag.contracts import IndexMeta
-from tarnrag.contracts import PipelineItem
-from tarnrag.retrieval import Query, RetrievalEngine
+from tarnrag.contracts import IndexMeta, PipelineItem
+from tarnrag.core.engine.config import EmbeddingSettings
+from tarnrag.ingestion.components.chunking.chunk import ChunkStage
+from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
 from tarnrag.ingestion.engine.queue import InMemoryJobQueue
 from tarnrag.ingestion.engine.result_sink import create_sink_registry
-from tarnrag.ingestion.components.chunking.chunk import ChunkStage
-from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
-from tarnrag.core.engine.config import EmbeddingSettings
-from tarnrag.ingestion.pipeline.embed import EmbedStage
-from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
 from tarnrag.ingestion.engine.worker import IngestionWorker
+from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
+from tarnrag.ingestion.pipeline.embed import EmbedStage
+from tarnrag.retrieval import Query, RetrievalEngine
 
 
 class _FakeEmbedder:

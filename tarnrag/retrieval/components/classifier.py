@@ -22,8 +22,9 @@ import string
 from abc import abstractmethod
 from typing import Any, Literal
 
-from tarnrag.contracts import Annotation, Geometry
 from bausatz import Component
+
+from tarnrag.contracts import Annotation, Geometry
 from tarnrag.core.text import looks_like_identifier
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.types import Query
@@ -87,12 +88,19 @@ class GenericQueryClassifier(QueryClassifier):
 # The identifier cue itself lives in ``core.text`` — shared with the sparse-query builders, so what this
 # classifier labels lexical is exactly what the FTS builder phrase-requires.
 _QUESTION_WORDS = frozenset(
-    "who what when where why how which whose whom is are was were do does did "
-    "can could should would will may might has have had".split()
+    [
+        "who", "what", "when", "where", "why", "how", "which", "whose", "whom", "is", "are", "was",
+        "were", "do", "does", "did", "can", "could", "should", "would", "will", "may", "might",
+        "has", "have", "had"
+    ]
 )
 _STOPWORDS = frozenset(
-    "a an the of to in on for and or but with at by from as into about than that this these those "
-    "be been being it its i we you they he she my your our their over under up down out".split()
+    [
+        "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "but", "with", "at", "by",
+        "from", "as", "into", "about", "than", "that", "this", "these", "those", "be", "been",
+        "being", "it", "its", "i", "we", "you", "they", "he", "she", "my", "your", "our", "their",
+        "over", "under", "up", "down", "out"
+    ]
 )
 
 

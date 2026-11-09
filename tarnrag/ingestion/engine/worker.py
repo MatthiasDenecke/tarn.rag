@@ -68,11 +68,8 @@ class IngestionWorker:
             if self.obs:
                 self.obs.counter(f"stage.{tag}.batches")
                 self.obs.counter(f"stage.{tag}.items", produced)
-        except Exception as e:  # noqa: BLE001 - record + re-raise so the queue requeues
-            logger.error(
-                "Worker %s compute failed on %s: %s", self.worker_id, stage_name, e,
-                exc_info=True,
-            )
+        except Exception as e:
+            logger.exception("Worker %s compute failed on %s", self.worker_id, stage_name)
             if self.obs:
                 self.obs.counter(f"stage.{tag}.errors")
                 await self.obs.log(

@@ -31,14 +31,18 @@ same views without a live session.
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import sys
+from typing import ClassVar
 
 try:  # importing `readline` gives input() up/down history + line editing (Linux/macOS stdlib)
     import readline  # noqa: F401
 except ImportError:  # pragma: no cover — e.g. Windows without pyreadline3; the REPL still works
     pass
 
-from rich.console import Console as RichConsole, Group
+from rich.console import Console as RichConsole
+from rich.console import Group
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
@@ -58,7 +62,7 @@ class Console:
     facade's high-level methods (``ingest`` / ``docs`` / ``delete`` / ``retrieve`` / ``explain`` /
     ``ask``). Owns its rich output sink (``self._out``) and the result/trace rendering."""
 
-    _COMMANDS = [
+    _COMMANDS: ClassVar[list[tuple[str, str]]] = [
         ("ingest <path> ...", "ingest (or re-ingest) files; a directory ingests the files in it"),
         ("docs", "list the ingested documents"),
         ("status", "summarize the corpus — counts + document-length stats"),
@@ -113,7 +117,7 @@ class Console:
                 continue
             try:
                 await handler(arg.strip())
-            except Exception as exc:  # keep the session alive on any command error
+            except Exception as exc:  # noqa: BLE001 - a REPL keeps the session alive on any command error
                 self._out.print(f"[red]error:[/] {escape(str(exc))}")
         self._out.print("[dim]bye[/]")
 
@@ -126,10 +130,15 @@ class Console:
         self._out.print(table)
 
     async def _do_ingest(self, arg: str) -> None:
-        if not arg:
-            self._out.print("usage: ingest <path> ...", style="dim")
+        try:
+            paths = self._split_paths(arg)
+        except ValueError as exc:  # e.g. an unbalanced quote
+            self._out.print(f"[red]can't read the paths:[/] {escape(str(exc))} — quote a path with spaces")
             return
-        outcome = await self._tarn.ingest(arg.split())
+        if not paths:
+            self._out.print("usage: ingest <path> ...   (quote a path with spaces: \"my docs/a.pdf\")", style="dim")
+            return
+        outcome = await self._tarn.ingest(paths)
         if outcome.value:
             table = Table(show_edge=False, header_style="bold")
             table.add_column("document", style="cyan")
@@ -145,6 +154,15 @@ class Console:
         else:
             self._out.print("[yellow]nothing ingested[/]")
         self._render_report(outcome.report)
+
+    @staticmethod
+    def _split_paths(arg: str) -> list[str]:
+        """Shell-style word splitting, so a quoted path keeps its spaces (``ingest "my docs/a.pdf" b.md``).
+        On Windows backslashes are path separators, not escapes, so the non-POSIX splitter is used (its
+        tokens keep their quotes, which are stripped here). Raises ``ValueError`` on an unbalanced quote."""
+        if os.name != "nt":
+            return shlex.split(arg)
+        return [token.strip('"').strip("'") for token in shlex.split(arg, posix=False)]
 
     async def _do_docs(self, _arg: str) -> None:
         outcome = await self._tarn.docs()

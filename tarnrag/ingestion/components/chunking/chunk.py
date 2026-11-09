@@ -14,10 +14,16 @@ import uuid
 from collections.abc import Iterator
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
-from tarnrag.contracts import Element, ElementKind, PipelineItem, Span, StructuredDocument
-from bausatz import ComponentFactory
+from tarnrag.contracts import (
+    Element,
+    ElementKind,
+    PipelineItem,
+    Span,
+    StructuredDocument,
+)
 from tarnrag.core.hashing import compute_content_hash
 from tarnrag.ingestion.components.chunking.chunker import Chunker
 from tarnrag.ingestion.components.chunking.structure_aware import StructureAwareChunker

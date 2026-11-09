@@ -30,9 +30,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from tarnrag.core.engine.config import DatabaseSettings
-from tarnrag.core.hashing import compute_content_hash
-from tarnrag.storage.repository import chunk_provenance as cp
 from tarnrag.contracts import (
     Candidate,
     Chunk,
@@ -45,6 +42,9 @@ from tarnrag.contracts import (
     JobStatusSource,
     RetrievalStore,
 )
+from tarnrag.core.engine.config import DatabaseSettings
+from tarnrag.core.hashing import compute_content_hash
+from tarnrag.storage.repository import chunk_provenance as cp
 from tarnrag.storage.repository.read_assembly import ReadAssembler
 from tarnrag.storage.status import DocumentStatusReader
 
@@ -333,7 +333,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             async with self.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - a health probe reports any failure as unhealthy
             return False
 
     # ---------------- §8 index metadata ----------------
@@ -478,14 +478,14 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         """
         Index chunk text for sparse search. No-op by default; SQLite writes ``fts_chunks``.
         """
-        return None
+        return
 
     async def _clear_chunk_index(self, conn: AsyncConnection, document_id: str) -> None:
         """
         Drop a document's chunks from search indexes the FK CASCADE can't reach (vec0/FTS
         virtual tables). No-op by default (the embeddings table cascades).
         """
-        return None
+        return
 
     async def _count_doc_embeddings(self, conn: AsyncConnection, document_id: str) -> int:
         """
