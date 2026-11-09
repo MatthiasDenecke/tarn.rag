@@ -37,8 +37,8 @@ Tags marked **(default)** are what you get without configuring anything.
 | Tag | Component | Notes |
 |---|---|---|
 | `plain_text` | `PlainTextExtractor` | |
-| `markdown` | `MarkdownExtractor` | |
-| `html` | `HtmlExtractor` | BeautifulSoup — `parsers` extra. |
+| `markdown` | `MarkdownExtractor` | Pipe tables become structured `Table`s (first column = row labels, as markdown has no row-header syntax); a table may directly follow a paragraph. |
+| `html` | `HtmlExtractor` | BeautifulSoup — `parsers` extra. Tables honour `colspan` / `rowspan` (cells land under their headers). |
 | `pdf_text` | `PdfTextExtractor` | pdfplumber, the fast tier — `parsers` extra. |
 | `docling` | `DoclingExtractor` | High-fidelity layout-aware PDF — `docling` extra (heavy). |
 | `table_json` | `TableJsonExtractor` | Tables from a JSON representation. |

@@ -43,6 +43,21 @@ async def test_falls_back_to_cite_all_on_non_json(make_result, fake_retrieval):
     assert len(out.steps) == 1 and out.steps[0].cited == [0, 1]  # the cite-all fallback
 
 
+async def test_an_explicit_empty_steps_list_cites_nothing(make_result, fake_retrieval):
+    """MED-06: ``"steps": []`` is the model citing nothing (e.g. "the passages don't say") — the answer
+    must not be dressed up as a step citing every passage."""
+    results = [make_result("a", "x"), make_result("b", "y")]
+    reply = json.dumps({"answer": "The passages do not say.", "steps": []})
+    out = await _reasoner().reason(Query(text="q"), _ctx(fake_retrieval(results), reply))
+    assert [(s.claim, s.cited) for s in out.steps] == [("The passages do not say.", [])]
+
+
+async def test_a_missing_steps_key_still_falls_back_to_cite_all(make_result, fake_retrieval):
+    results = [make_result("a", "x"), make_result("b", "y")]
+    out = await _reasoner().reason(Query(text="q"), _ctx(fake_retrieval(results), json.dumps({"answer": "ok"})))
+    assert out.steps[0].cited == [0, 1]  # a format slip, not a statement — keep the evidence attached
+
+
 async def test_extracts_json_embedded_in_prose(make_result, fake_retrieval):
     results = [make_result("a", "x")]
     reply = 'Sure!\n{"answer": "ok", "steps": [{"claim": "c", "cited": [1]}]}\nThanks'

@@ -2,9 +2,11 @@
 
 ATX headings, paragraphs, fenced code, **list items**, and **pipe tables** (→ ``Table``/``TableCell``,
 so a markdown table populates ``table_cells`` like Docling's). Each block becomes one element with a
-char-offset span into the normalized document text and the header path of its enclosing headings.
-Tables follow the standard convention of a blank line before them; nesting / multi-line list items
-coalesce gracefully.
+char-offset span into the normalized document text and the header path of its enclosing headings. A
+table may follow a blank line or directly interrupt a paragraph (as GitHub renders it); nesting /
+multi-line list items coalesce gracefully. Markdown has no row-header syntax, so a table's first column
+labels its data rows (``is_row_header`` — the ``table_json`` ``header_cols=1`` convention), which is what
+``Table.contextual_text`` and the ``table_lookup`` reasoner resolve rows by.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ class MarkdownExtractor(Extractor):
                 blocks.append(("heading", heading.group(2).strip(), len(heading.group(1)), None))
                 i += 1
                 continue
-            if "|" in line and i + 1 < n and MarkdownExtractor._is_delimiter(lines[i + 1]):
+            if MarkdownExtractor._is_table_start(lines, i):
                 table_lines = [line, lines[i + 1]]
                 i += 2
                 while i < n and "|" in lines[i] and lines[i].strip():
@@ -74,7 +76,12 @@ class MarkdownExtractor(Extractor):
                 i += 1
                 continue
             para: list[str] = []
-            while i < n and lines[i].strip() and not MarkdownExtractor._is_special(lines[i]):
+            while (
+                i < n
+                and lines[i].strip()
+                and not MarkdownExtractor._is_special(lines[i])
+                and not MarkdownExtractor._is_table_start(lines, i)  # a table may interrupt a paragraph
+            ):
                 para.append(lines[i].strip())
                 i += 1
             blocks.append(("paragraph", " ".join(para), None, None))
@@ -84,6 +91,11 @@ class MarkdownExtractor(Extractor):
     def _is_special(line: str) -> bool:
         """A line that ends the current paragraph (a heading, fence, or list item starts a new block)."""
         return bool(_HEADING.match(line)) or line.strip().startswith(_FENCE) or bool(_LIST_ITEM.match(line))
+
+    @staticmethod
+    def _is_table_start(lines: list[str], i: int) -> bool:
+        """Whether ``lines[i]`` is a pipe-table header row (it has a pipe and the next line is a delimiter)."""
+        return "|" in lines[i] and i + 1 < len(lines) and MarkdownExtractor._is_delimiter(lines[i + 1])
 
     @staticmethod
     def _split_row(line: str) -> list[str]:
@@ -108,6 +120,11 @@ class MarkdownExtractor(Extractor):
         cells = [TableCell(id=f"r0c{c}", row=0, col=c, is_column_header=True, text=t) for c, t in enumerate(header)]
         for r, row in enumerate(data, start=1):
             for c in range(n_cols):
-                cells.append(TableCell(id=f"r{r}c{c}", row=r, col=c, text=row[c] if c < len(row) else ""))
+                cells.append(
+                    TableCell(
+                        id=f"r{r}c{c}", row=r, col=c, text=row[c] if c < len(row) else "",
+                        is_row_header=c == 0,  # the first column labels the row (no markdown syntax for it)
+                    )
+                )
         markdown = "\n".join(lines)
         return Table(n_rows=len(data) + 1, n_cols=n_cols, cells=cells, markdown=markdown), markdown

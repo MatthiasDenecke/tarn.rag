@@ -8,8 +8,8 @@ Backends, all config-driven:
 
 - ``HeuristicGroundingChecker`` — content-word overlap; confident at the extremes, ``UNCERTAIN`` in the
   middle band (LLM-free, no extra resources, C++-portable);
-- ``LLMGroundingChecker`` — a single batched, decisive verdict from the ``LanguageModel`` (catches
-  paraphrase / contradiction the overlap misses);
+- ``LLMGroundingChecker`` — a single batched verdict from the ``LanguageModel`` (catches paraphrase /
+  contradiction the overlap misses) — decisive where the model answered, ``UNCERTAIN`` where it didn't;
 - ``CascadingGroundingChecker`` — a container that runs child checkers in order and escalates only the
   ``UNCERTAIN`` steps to the next, so the expensive checker runs only on what the cheap one couldn't decide
   (and is skipped entirely when nothing is uncertain).
@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from abc import abstractmethod
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -115,6 +115,9 @@ class HeuristicGroundingChecker(GroundingChecker):
         return {w for w in _TOKEN.findall(text.lower()) if len(w) > 1 and w not in stop}
 
 
+_TRUE_WORDS = frozenset({"true", "yes", "supported", "grounded"})
+_FALSE_WORDS = frozenset({"false", "no", "unsupported", "ungrounded", "not supported"})
+
 _SYSTEM = (
     "You are a strict fact-checker. For each numbered claim, decide whether it is FULLY supported by its "
     "cited passages ALONE (no outside knowledge). Reply with a SINGLE JSON object and nothing else:\n"
@@ -123,9 +126,13 @@ _SYSTEM = (
 
 
 class LLMGroundingChecker(GroundingChecker):
-    """Verify each claim against its cited passages with the ``LanguageModel`` — one batched, decisive call
-    (``GROUNDED`` / ``UNGROUNDED`` per step). Falls back to ``GROUNDED`` if the reply isn't parseable, so a
-    verification hiccup never spuriously refuses an otherwise-good answer."""
+    """Verify each claim against its cited passages with the ``LanguageModel`` — one batched call
+    (``GROUNDED`` / ``UNGROUNDED`` per step). A step that cites nothing is ``UNGROUNDED`` without asking
+    (no evidence can't support a claim — the heuristic checker's rule too). Where the reply gives no
+    usable verdict for a step — unparseable, missing, or not a recognizable true/false — the verdict is
+    ``UNCERTAIN``: the checker couldn't decide, so a cascade can escalate and the pipeline's
+    ``uncertain_is_grounded`` policy decides (lenient by default — a verification hiccup still doesn't
+    refuse an otherwise-good answer, but a strict deployment no longer gets a fake pass)."""
 
     class Config(GroundingChecker.Config):
         class_name: Literal["llm_grounding"] = "llm_grounding"
@@ -136,7 +143,8 @@ class LLMGroundingChecker(GroundingChecker):
         if not reasoned.steps:
             return []
         completion = await ctx.llm.complete(Prompt(system=_SYSTEM, user=self._format(reasoned)))
-        return self._parse(completion.text, len(reasoned.steps))
+        verdicts = self._parse(completion.text, len(reasoned.steps))
+        return [Verdict.UNGROUNDED if not s.cited else v for s, v in zip(reasoned.steps, verdicts)]
 
     def _format(self, reasoned: ReasonedAnswer) -> str:
         """The user message: each numbered claim + the passages it cites (rendered per ``table_view``,
@@ -154,14 +162,34 @@ class LLMGroundingChecker(GroundingChecker):
 
     @staticmethod
     def _parse(text: str, n: int) -> list[Verdict]:
-        """Parse ``{\"verdicts\": [bool, ...]}`` to decisive verdicts; pad/truncate to ``n``; fall back to
-        all-grounded on an unparseable reply."""
+        """Parse ``{\"verdicts\": [true, false, ...]}`` into one verdict per step (truncated / padded to
+        ``n``). Each entry is read strictly — a JSON boolean, a ``"true"`` / ``"false"``-style string (a
+        model that quotes its booleans), 1 / 0, or an object carrying one of those under ``grounded`` /
+        ``supported`` / ``verdict``; ``bool("false")`` is ``True``, so nothing is coerced loosely. An
+        entry it can't read, a missing one, or an unparseable reply ⇒ ``UNCERTAIN``."""
         data = extract_json(text)
         raw = data.get("verdicts") if isinstance(data, dict) else None
         if not isinstance(raw, list):
-            return [Verdict.GROUNDED] * n  # unparseable ⇒ don't penalize (no spurious refusal)
-        out = [Verdict.GROUNDED if bool(v) else Verdict.UNGROUNDED for v in raw[:n]]
-        return out + [Verdict.GROUNDED] * (n - len(out))  # pad any missing verdicts as grounded
+            return [Verdict.UNCERTAIN] * n  # unparseable ⇒ undecided, not a pass
+        out = [LLMGroundingChecker._verdict(v) for v in raw[:n]]
+        return out + [Verdict.UNCERTAIN] * (n - len(out))  # no verdict for a step ⇒ undecided
+
+    @staticmethod
+    def _verdict(value: Any) -> Verdict:
+        """One verdict entry, read strictly (see :meth:`_parse`)."""
+        if isinstance(value, dict):
+            value = next((value[k] for k in ("grounded", "supported", "verdict") if k in value), None)
+        if isinstance(value, bool):
+            return Verdict.GROUNDED if value else Verdict.UNGROUNDED
+        if isinstance(value, int | float) and value in (0, 1):
+            return Verdict.GROUNDED if value == 1 else Verdict.UNGROUNDED
+        if isinstance(value, str):
+            word = value.strip().lower()
+            if word in _TRUE_WORDS:
+                return Verdict.GROUNDED
+            if word in _FALSE_WORDS:
+                return Verdict.UNGROUNDED
+        return Verdict.UNCERTAIN
 
 
 class CascadingGroundingChecker(GroundingChecker):

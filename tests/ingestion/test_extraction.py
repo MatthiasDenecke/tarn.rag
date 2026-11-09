@@ -200,3 +200,86 @@ def test_table_json_rejects_a_non_grid():
 def test_table_json_empty_grid_yields_no_elements():
     doc = _run(TableJsonExtractor, Source(source_id="d1", content="[]"))
     assert doc.elements == [] and doc.text == ""
+
+
+# ---------------- MED-05: table structure the reasoners can address ----------------
+
+
+def _md_table(md: str):
+    from tarnrag.ingestion.components.extraction.markdown import MarkdownExtractor
+
+    doc = MarkdownExtractor(MarkdownExtractor.Config()).extract(Source(source_id="d", source_kind="md", content=md))
+    return [el for el in doc.elements if el.table is not None], doc
+
+
+async def test_a_markdown_financial_table_answers_through_table_lookup():
+    """The first column labels the rows (``is_row_header``), so the deterministic table_lookup reasoner
+    resolves the row and computes the exact answer — it used to find no row headers and always abstain."""
+    from tarnrag.contracts import ChunkProvenance, RetrievalResult
+    from tarnrag.generation import GenerationContext, TableLookupReasoner
+    from tarnrag.retrieval.types import Query
+
+    [table_el], _ = _md_table(
+        "| Item | 2019 | 2018 |\n|---|---|---|\n| Revenue | 1,200 | 1,000 |\n| Goodwill | (88) | 40 |\n"
+    )
+    table = table_el.table
+    assert [c.text for c in table.cells if c.is_row_header] == ["Revenue", "Goodwill"]
+    assert not any(c.is_row_header for c in table.cells if c.row == 0)  # the header row is column headers
+
+    hit = RetrievalResult(
+        chunk_id="t", text=table_el.text, score=1.0, component_scores={}, document_id="d",
+        source_kind="md", standard_id=None, locator=None, license_class="public_domain",
+        provenance=ChunkProvenance(content_hash="h", table=table),
+    )
+
+    class _Retrieval:
+        async def search(self, query):
+            return [hit]
+
+    reasoner = TableLookupReasoner(TableLookupReasoner.Config(fallback=None))
+    out = await reasoner.reason(
+        Query(text="What was the change in revenue from 2018 to 2019?"), GenerationContext(_Retrieval(), llm=None)
+    )
+    assert out.answer == "200" and not out.abstained
+
+
+def test_a_markdown_table_may_directly_follow_a_paragraph():
+    tables, doc = _md_table("Revenue by year:\n| Year | Revenue |\n|---|---|\n| 2019 | 10 |\n")
+    assert [el.kind.value for el in doc.elements] == ["paragraph", "table"]
+    assert doc.elements[0].text == "Revenue by year:"
+    assert tables[0].table.n_rows == 2
+
+
+def _html_table(html: str):
+    pytest.importorskip("bs4")
+    from tarnrag.ingestion.components.extraction.html import HtmlExtractor
+
+    doc = HtmlExtractor(HtmlExtractor.Config()).extract(Source(source_id="h", source_kind="html", content=html))
+    [table_el] = [el for el in doc.elements if el.table is not None]
+    return {(c.row, c.col): c for c in table_el.table.cells}, table_el
+
+
+def test_html_cells_land_on_the_grid_past_colspans_and_rowspans():
+    cells, el = _html_table(
+        "<table>"
+        "<tr><th>Item</th><th colspan='2'>2019</th><th>2018</th></tr>"
+        "<tr><td rowspan='2'>Revenue</td><td>H1</td><td>H2</td><td>9</td></tr>"
+        "<tr><td>5</td><td>6</td><td>4</td></tr>"
+        "</table>"
+    )
+    assert cells[(0, 3)].text == "2018"  # after the colspan=2 header, not at col 2
+    assert cells[(1, 3)].text == "9"  # lines up under its header
+    assert cells[(2, 1)].text == "5" and cells[(2, 3)].text == "4"  # row 2 skips the rowspan'd column 0
+    assert cells[(1, 0)].is_row_header and cells[(1, 0)].row_span == 2
+    assert cells[(0, 1)].col_span == 2 and cells[(0, 1)].is_column_header
+    assert el.table.n_cols == 4
+    assert el.text.splitlines()[0] == "| Item | 2019 |  | 2018 |"  # the rendering keeps the grid aligned
+
+
+def test_html_nested_tables_and_malformed_spans_dont_corrupt_the_outer_grid():
+    cells, el = _html_table(
+        "<table><tr><th>A</th><th>B</th></tr>"
+        "<tr><td colspan='x'>1</td><td><table><tr><td>inner</td></tr></table></td></tr></table>"
+    )
+    assert el.table.n_rows == 2  # the nested table's row is not the outer table's
+    assert cells[(1, 0)].col_span == 1 and cells[(1, 1)].col == 1  # a malformed span falls back to 1

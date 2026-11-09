@@ -55,6 +55,11 @@ _OPERATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+# Multi-letter function words that never identify a row (the label side of ``_best_row``'s coverage).
+# Single letters are NOT listed: they're split off as tie-breakers, so "Plan A" keeps its "A".
+_ROW_STOP = frozenset({"the", "of", "and", "in", "an", "to", "for", "on", "at", "by", "or", "is", "as"})
+
+
 def _parse_number(text: str) -> float | None:
     """A cell's numeric value: strips ``$``/``%``/thousands separators; ``(x)`` is accounting
     notation for −x; anything non-numeric (labels, em-dashes, blanks) is ``None``."""
@@ -192,22 +197,30 @@ class TableLookupReasoner(Reasoner):
         return mapping
 
     def _best_row(self, table: Table, question: str) -> tuple[int | None, str]:
-        """The data row whose header label is best covered by the question's tokens (ties → the
-        longer, more specific label); ``None`` below the coverage floor."""
+        """The data row whose header label is best covered by the question's tokens (ties → the label
+        whose single-letter tokens the question also names, then the longer, more specific label);
+        ``None`` below the coverage floor.
+
+        Coverage counts a label's **content** tokens only — stopwords and single letters are excluded —
+        so an article can't carry a match: in "What is a change in revenue …" the ``a`` must not cover half
+        of a "Plan A" label and resolve the wrong row (the reasoner's promise is *never guessed*). A
+        letter still disambiguates *between* covered labels ("Series A" vs "Series B")."""
         q_tokens = set(re.findall(r"\w+", question.lower()))
-        best: tuple[float, int, int, str] = (0.0, 0, -1, "")  # (coverage, label size, row, label)
+        best: tuple[float, int, int, int, str] = (0.0, 0, 0, -1, "")  # (coverage, letters, size, row, label)
         labels: dict[int, list[str]] = {}
         for cell in table.cells:
             if cell.is_row_header and cell.text.strip():
                 labels.setdefault(cell.row, []).append(cell.text.strip())
         for row, parts in labels.items():
             label = " ".join(parts)
-            tokens = set(re.findall(r"\w+", label.lower())) - {"the", "of", "and", "in"}
-            if not tokens:
+            tokens = set(re.findall(r"\w+", label.lower())) - _ROW_STOP
+            content = {t for t in tokens if len(t) > 1 or t.isdigit()}
+            if not content:
                 continue
-            coverage = len(tokens & q_tokens) / len(tokens)
-            if (coverage, len(tokens)) > (best[0], best[1]):
-                best = (coverage, len(tokens), row, label)
-        if best[0] >= self.config.row_coverage and best[2] >= 0:
-            return best[2], best[3]
+            coverage = len(content & q_tokens) / len(content)
+            letters = len((tokens - content) & q_tokens)  # single-letter tokens: tie-breakers only
+            if (coverage, letters, len(tokens)) > best[:3]:
+                best = (coverage, letters, len(tokens), row, label)
+        if best[0] >= self.config.row_coverage and best[3] >= 0:
+            return best[3], best[4]
         return None, ""
