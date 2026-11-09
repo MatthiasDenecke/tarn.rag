@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # How document ids (== source_id) are assigned. The policy is strict — a mismatch fails
@@ -151,11 +151,11 @@ class DatabaseSettings(BaseModel):
 
 class WorkerSettings(BaseModel):
     """
-    Distributed-mode worker tuning.
+    Distributed-mode worker tuning, applied to the pgQueuer consumer loop (``PgQueuerJobQueue.run``).
     """
 
-    queue_timeout_seconds: int = 30
-    concurrency: int = 4
+    queue_timeout_seconds: int = Field(default=30, gt=0)  # how long the loop waits for work before re-polling
+    concurrency: int = Field(default=4, ge=1)  # batches one worker process runs at once
 
 
 class ObservabilitySettings(BaseModel):

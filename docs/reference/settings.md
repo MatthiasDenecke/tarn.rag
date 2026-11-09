@@ -89,8 +89,8 @@ Built only when a `GenerationEngine` is created — retrieval-only deployments n
 
 | Env var | Default | Description |
 |---|---|---|
-| `WORKER__QUEUE_TIMEOUT_SECONDS` | `30` | |
-| `WORKER__CONCURRENCY` | `4` | |
+| `WORKER__QUEUE_TIMEOUT_SECONDS` | `30` | How long an idle worker waits for a job before re-polling the queue (pgQueuer's dequeue timeout). Must be > 0. |
+| `WORKER__CONCURRENCY` | `4` | Batches one worker process runs at once (stage compute runs in threads, off the event loop). Must be ≥ 1; scale out with more worker processes. |
 
 ## `observability`
 

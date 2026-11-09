@@ -43,8 +43,10 @@ instead of processing inline. Consume with one or more worker processes:
 python run_worker.py
 ```
 
-Worker tuning lives under `WORKER__*` (`WORKER__CONCURRENCY`, default 4;
-`WORKER__QUEUE_TIMEOUT_SECONDS`, default 30). pgQueuer owns the queue mechanics — SKIP LOCKED
+Worker tuning lives under `WORKER__*`: `WORKER__CONCURRENCY` (default 4) is how many batches one
+worker process runs at once, and `WORKER__QUEUE_TIMEOUT_SECONDS` (default 30) how long an idle worker
+waits before re-polling. Stage compute (parsing, embedding) runs in threads, so a busy worker still
+answers the queue's heartbeats. pgQueuer owns the queue mechanics — SKIP LOCKED
 dispatch, retries, NOTIFY wake-ups, dead-lettering. A worker that fails a batch re-raises, and the
 queue requeues the job; downstream jobs are only enqueued after upstream results are persisted, so
 a crash never loses or duplicates work (re-ingesting is idempotent by document id).

@@ -16,6 +16,7 @@ needs a local model dir to run.
 
 from __future__ import annotations
 
+import threading
 from abc import abstractmethod
 from pathlib import Path
 
@@ -53,6 +54,7 @@ class OnnxCrossEncoder(CrossEncoder):
         self.model_path = self.model_dir / model_file
         self.tokenizer_path = self.model_dir / tokenizer_file
         self._session = None
+        self._load_lock = threading.Lock()  # concurrent first scores (off-loop) must load the model once
         self._tokenizer = None
         self._input_names: set[str] | None = None
 
@@ -72,18 +74,21 @@ class OnnxCrossEncoder(CrossEncoder):
 
     def _load(self):
         """Lazily build the ONNX session + tokenizer on first use (keeps import cheap)."""
-        if self._session is None:
+        if self._session is not None:
+            return
+        with self._load_lock:
+            if self._session is not None:  # another thread finished the load while we waited
+                return
             import onnxruntime as ort
             from tokenizers import Tokenizer
 
             tok = Tokenizer.from_file(str(self.tokenizer_path))
             tok.enable_truncation(self.max_length)
             tok.enable_padding()
+            session = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
             self._tokenizer = tok
-            self._session = ort.InferenceSession(
-                str(self.model_path), providers=["CPUExecutionProvider"]
-            )
-            self._input_names = {i.name for i in self._session.get_inputs()}
+            self._input_names = {i.name for i in session.get_inputs()}
+            self._session = session  # published last: a non-None session means everything is ready
 
     def score(self, query: str, passages: list[str]) -> list[float]:
         """Score each (``query``, passage) pair with one ONNX forward pass over the batch and return
