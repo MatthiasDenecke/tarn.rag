@@ -54,7 +54,7 @@ async def _index(repo):
                 parent_doc_id="s1", content="storage tank corrosion inspection", chunk_index=0,
                 total_chunks=2, metadata={"locator": "§6.4"},
                 provenance=ChunkProvenance(
-                    content_hash="h0", header_path=["Safety"], level=1, geometry=[Span(start=5, end=8)]
+                    content_hash="h0", header_path=["Safety"], level=0, geometry=[Span(start=5, end=8)]
                 ),
             ),
             Chunk(parent_doc_id="s1", content="quokka marsupial", chunk_index=1, total_chunks=2, metadata={}),
@@ -97,8 +97,31 @@ async def test_dense_sparse_hydrate_roundtrip(pg_repo):
     # hydrate carries licensing + layout-aware provenance (the shared Core _chunk_provenance path).
     recs = {r.chunk_id: r for r in await pg_repo.hydrate([a, b])}
     assert recs[a].locator == "§6.4" and recs[a].ai_grounding_allowed is True
-    assert recs[a].provenance.header_path == ["Safety"] and recs[a].provenance.level == 1
+    assert recs[a].provenance.header_path == ["Safety"] and recs[a].provenance.level == 0
     assert recs[a].provenance.geometry[0].start == 5
+
+
+async def test_section_parents_are_hydrated_but_never_searched(pg_repo):
+    """HIGH-01: a section parent (level > 0) is stored for the auto-merger to hydrate, but dense + sparse
+    search return retrieval units only — even from an index built when parents were still embedded."""
+    _, (leaf, parent) = await pg_repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s2"}),
+        [
+            Chunk(parent_doc_id="s2", content="valve torque check", chunk_index=1,
+                  metadata={"parent_ordinal": 0}),
+            Chunk(parent_doc_id="s2", content="Valves: valve torque check and more", chunk_index=0,
+                  provenance=ChunkProvenance(content_hash="p", header_path=["Valves"], level=1)),
+        ],
+    )
+    await pg_repo.store_embeddings([  # the parent's vector is what a pre-fix ingest would have written
+        Embedding(chunk_id=leaf, vector=[0.0, 0.0, 1.0]),
+        Embedding(chunk_id=parent, vector=[0.0, 0.0, 1.0]),
+    ])
+    assert [c.chunk_id for c in await pg_repo.dense_knn([0.0, 0.0, 1.0], 5)] == [leaf]
+    assert [c.chunk_id for c in await pg_repo.dense_knn([0.0, 0.0, 1.0], 5, ChunkFilter())] == [leaf]
+    assert [c.chunk_id for c in await pg_repo.sparse_search("valve torque", 5)] == [leaf]
+    [record] = await pg_repo.hydrate([parent])
+    assert record.provenance.level == 1  # still hydratable for the merger
 
 
 async def test_filter_drops_disallowed_and_scopes(pg_repo):

@@ -84,6 +84,11 @@ SQLAlchemy 2.0 Core with dialect-specific behavior isolated to hooks, so the two
 behaviorally identical. The SQLite file is deliberately portable — a future C++ reader can open it
 directly.
 
+The structure-aware chunker emits a section tree: **leaf** chunks are the retrieval units (embedded,
+BM25-indexed, searched), while **section parents** are stored only so the auto-merger can swap a group
+of retrieved siblings for their whole section. A parent is never searched itself, so a section and its
+own fragments can't both reach the reader.
+
 Writes are transactional and idempotent: documents are keyed by a **stable** `source_id`, and
 re-ingesting replaces chunks and embeddings rather than duplicating them. Identity (`ID_POLICY`) is
 separate from content — every document also stores a `content_hash` for dedup queries.

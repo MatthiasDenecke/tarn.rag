@@ -28,7 +28,7 @@ Tags marked **(default)** are what you get without configuring anything.
 | `pipeline` **(default)** | `Pipeline` | The stage DAG; default stages below, in order. |
 | `LoadAndParse` | `LoadAndParseStage` | Routes each `source_kind` to an extractor; produces a `StructuredDocument`. |
 | `Enrich` | `EnrichStage` | Runs document-phase enrichers (default: none). |
-| `CleanAndNormalize` | `CleanAndNormalizeStage` | Text cleanup. |
+| `CleanAndNormalize` | `CleanAndNormalizeStage` | Normalizes line endings, strips control characters, collapses whitespace (`collapse_whitespace`) in the structured document — every span remapped, code blocks and tables kept verbatim. The cleaned text is what gets stored, chunked, and embedded. |
 | `Chunk` | `ChunkStage` | Splits via its configured chunker (default `structure_aware`). |
 | `Embed` | `EmbedStage` | Embeds chunks with the shared embedder. |
 
@@ -49,7 +49,7 @@ A per-document `metadata['extractor']` override picks one inline.
 
 | Tag | Component | Notes |
 |---|---|---|
-| `structure_aware` **(default)** | `StructureAwareChunker` | Follows the `StructuredDocument` (headers, tables, geometry); emits `ChunkProvenance`. |
+| `structure_aware` **(default)** | `StructureAwareChunker` | Follows the `StructuredDocument` (headers, tables, geometry); emits `ChunkProvenance`. Leaves are the retrieval units; section parents are stored for `auto_merge`, never embedded or searched. |
 | `recursive` | `RecursiveCharacterChunker` | Classic size/overlap character splitting. |
 
 ### Enrichers (children of `Enrich`)

@@ -52,3 +52,9 @@ async def test_verbose_includes_jobs():
     rows = [{"status": "completed", "job_id": "j1"}]
     s = await _reader(DocumentFacts(True, 1, 1), rows).document_status("d", verbose=True)
     assert s["jobs"] == rows
+
+
+async def test_complete_once_every_leaf_is_embedded():
+    """Section parents get no vector, so completeness is measured against the leaves (``leaf_count``)."""
+    s = await _reader(DocumentFacts(True, 5, 3, leaf_count=3), [{"status": "completed"}]).document_status("d")
+    assert s["status"] == "complete" and s["chunk_count"] == 5  # all chunks still reported

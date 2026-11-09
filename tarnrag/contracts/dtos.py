@@ -72,15 +72,22 @@ class PipelineItem(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def derive(self, *, content: str | None = None, metadata: dict[str, Any] | None = None) -> PipelineItem:
-        """A fresh item carrying forward ``document`` + ``provenance``; only ``content`` / ``metadata``
-        change (both default to this item's). ``id`` is reset (the worker re-ids the output), so a 1→1
-        stage emits a new item without re-listing the flow-through fields — the one place they're
-        threaded, so adding a flow-through field updates this method, not every stage."""
+    def derive(
+        self,
+        *,
+        content: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        document: StructuredDocument | None = None,
+    ) -> PipelineItem:
+        """A fresh item carrying forward ``document`` + ``provenance``; ``content`` / ``metadata`` (and,
+        for a stage that rewrites the document itself, ``document``) change — each defaults to this
+        item's. ``id`` is reset (the worker re-ids the output), so a 1→1 stage emits a new item without
+        re-listing the flow-through fields — the one place they're threaded, so adding a flow-through
+        field updates this method, not every stage."""
         return PipelineItem(
             content=self.content if content is None else content,
             metadata=self.metadata if metadata is None else metadata,
-            document=self.document,
+            document=self.document if document is None else document,
             provenance=self.provenance,
         )
 
@@ -160,12 +167,15 @@ class Embedding(BaseModel):
 class DocumentFacts:
     """
     Persisted-data facts for one document: whether its row exists, and how many
-    chunks/embeddings it has.
+    chunks/embeddings it has. ``leaf_count`` is how many of the chunks are retrieval units (leaves —
+    the ones that get a vector; section parents don't): the document is fully indexed once
+    ``embedding_count`` reaches it. ``None`` (a store that doesn't distinguish) ⇒ every chunk counts.
     """
 
     present: bool  # the document row exists in the data store
-    chunk_count: int
+    chunk_count: int  # every stored chunk, section parents included
     embedding_count: int
+    leaf_count: int | None = None  # the retrieval units among them (None ⇒ chunk_count)
 
 
 @dataclass(frozen=True)

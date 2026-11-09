@@ -28,6 +28,7 @@ from tarnrag.contracts.structure import (
     StructuredDocument,
     Table,
     TableCell,
+    is_retrieval_unit,
 )
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "PageBox",
     "Geometry",
     "ChunkProvenance",
+    "is_retrieval_unit",
     # ports
     "ChunkStore",
     "RetrievalStore",

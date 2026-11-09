@@ -608,15 +608,15 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             ).first() is not None
             if not present:
                 return DocumentFacts(present=False, chunk_count=0, embedding_count=0)
-            chunk_count = (
+            chunk_count, leaf_count = (
                 await conn.execute(
-                    select(func.count())
+                    select(func.count(), func.count().filter(self.chunks.c.level == 0))
                     .select_from(self.chunks)
                     .where(self.chunks.c.document_id == document_id)
                 )
-            ).scalar_one()
+            ).one()
             embedding_count = await self._count_doc_embeddings(conn, document_id)
-        return DocumentFacts(True, chunk_count, embedding_count)
+        return DocumentFacts(True, chunk_count, embedding_count, leaf_count)
 
     async def corpus_stats(self) -> CorpusStatus:
         """A whole-repository snapshot: document / chunk / embedding counts plus the distribution of
