@@ -47,8 +47,8 @@ class AutoMerger(Merger):
     license class, and method scope); otherwise its children stay. The retrievers pre-filter in SQL, but a
     parent is hydrated here, outside that path, and need not share its leaves' scope (a method bundle may
     hold leaves without their section). Finally a result whose text is already covered by a returned
-    ancestor (same document, higher level, a superset of its source elements) is dropped, so a section
-    and one of its own fragments never both reach the reader.
+    ancestor (same document, higher level, a superset of its char spans) is dropped, so a section and one
+    of its own fragments never both reach the reader.
     """
 
     class Config(Merger.Config):
@@ -119,21 +119,25 @@ class AutoMerger(Merger):
 
     @staticmethod
     def _drop_covered(results: list[RetrievalResult]) -> list[RetrievalResult]:
-        """Drop each result whose content a higher-level result of the same document already carries —
-        a section parent's ``source_element_ids`` include every descendant's, so containment is a subset
-        test (no store round-trip). Covers a leaf left behind under a parent merged at a higher level, and a
-        section retrieved alongside its own fragment from an index that still holds parent vectors."""
-        sections = [r for r in results if r.provenance and r.provenance.level > 0]
+        """Drop each result whose content a higher-level result of the same document already carries.
+        A section parent's geometry is the concatenation of its descendants' char spans (the chunker's
+        aggregation; geometry is persisted, so it survives hydration), so containment is a subset test on
+        the ``(start, end)`` footprints — no store round-trip. Covers a leaf left behind under a parent
+        merged at a higher level, and a section retrieved alongside its own fragment from an index that
+        still holds parent vectors. (Pieces of one oversize element share its span but sit at the same
+        level, so neither covers the other.)"""
+        def footprint(r: RetrievalResult) -> set[tuple[int, int]]:
+            return {(s.start, s.end) for s in r.provenance.geometry} if r.provenance else set()
+
+        sections = [(s, footprint(s)) for s in results if s.provenance and s.provenance.level > 0]
         if not sections:
             return results
 
         def covered(r: RetrievalResult) -> bool:
-            ids = set(r.provenance.source_element_ids) if r.provenance else set()
-            return bool(ids) and any(
-                s.document_id == r.document_id
-                and s.provenance.level > r.provenance.level
-                and ids <= set(s.provenance.source_element_ids)
-                for s in sections
+            mine = footprint(r)
+            return bool(mine) and any(
+                s.document_id == r.document_id and s.provenance.level > r.provenance.level and mine <= theirs
+                for s, theirs in sections
             )
 
         return [r for r in results if not covered(r)]
