@@ -3,14 +3,22 @@
 
 Unit-level: a fake store serves the section parents; the results stand in for retrieved leaves."""
 
-from tarnrag.contracts import ChunkProvenance, ChunkRecord, MethodRef, RetrievalResult
+from tarnrag.contracts import ChunkProvenance, ChunkRecord, MethodRef, RetrievalResult, Span
 from tarnrag.retrieval import AutoMerger, Query, RetrievalContext
 from tarnrag.retrieval.types import Purpose
 
 
+# Each named piece of text sits at its own char span; a chunk's geometry is the spans of what it covers
+# (a section parent's = its heading + every descendant's — the chunker's aggregation, persisted).
+_AT = {name: (i * 10, i * 10 + 5) for i, name in enumerate("abcdefgh")} | {
+    name: (100 + i * 10, 105 + i * 10) for i, name in enumerate(["h", "h1", "h2", "hg", "e7"])
+}
+
+
 def _prov(cid: str, *, level: int = 0, parent: str | None = None, elements: list[str] | None = None):
     return ChunkProvenance(
-        content_hash=cid, level=level, parent_chunk_id=parent, source_element_ids=elements or [cid]
+        content_hash=cid, level=level, parent_chunk_id=parent,
+        geometry=[Span(start=_AT[e][0], end=_AT[e][1]) for e in (elements or [cid])],
     )
 
 
@@ -120,3 +128,39 @@ async def test_oversize_pieces_of_one_element_are_not_mistaken_for_containment()
     first = _leaf("a#0", 0.9, parent="p", elements=["e7"])
     second = _leaf("a#1", 0.8, parent="q", elements=["e7"])
     assert await _merge(_Store(), [first, second]) == ["a#0", "a#1"]
+
+
+async def test_multi_level_merge_over_persisted_chunks(tmp_path):
+    """The same climb end to end, over what ingestion actually persists and hydration actually returns
+    (geometry survives hydration; source element ids don't). Pumps ⊃ {two leaves, Valves ⊃ {two leaves}}:
+    retrieving all four leaves merges each section and then drops Valves, which Pumps already carries."""
+    from tarnrag.core.engine.config import DatabaseSettings, EmbeddingSettings, Settings
+    from tarnrag.ingestion import IngestionEngine
+    from tarnrag.retrieval import RetrievalPipeline
+
+    spec = {"class_name": "pipeline", "stages": [
+        {"class_name": "LoadAndParse"},
+        {"class_name": "Chunk", "chunker": {"class_name": "structure_aware", "max_chars": 40}},
+        {"class_name": "Embed"},
+    ]}
+    settings = Settings(
+        _env_file=None, MODE="embedded", ID_POLICY="caller", EMBEDDING_DIMENSION=16,
+        embedding=EmbeddingSettings(provider="hash"),
+        database=DatabaseSettings(document_url=f"sqlite:///{tmp_path}/merge.db"),
+        components={"ingestion_pipeline": spec},
+    )
+    md = (
+        "# Pumps\n\nInspect pump seals monthly.\n\nReplace pump bearings yearly.\n\n"
+        "## Valves\n\nCheck valve torque weekly.\n\nLubricate valve stems often.\n"
+    )
+    async with await IngestionEngine.create(settings) as ingest:
+        await ingest.ingest_content([{"source_id": "m", "content": md, "source_type": "md"}])
+        chunks = await ingest.repository.get_chunks_by_document("m")
+        top = next(c for c in chunks if c.provenance.level == 2)
+        pipeline = RetrievalPipeline(RetrievalPipeline.Config(
+            retrievers=[{"class_name": "sparse"}], merger={"class_name": "auto_merge"},
+        ))
+        ctx = RetrievalContext(store=ingest.repository, embedder=None)
+        results = await pipeline.search(Query(text="pump valve seals bearings torque stems"), ctx)
+    assert [r.chunk_id for r in results] == [top.id]
+    assert results[0].provenance.header_path == ["Pumps"]
