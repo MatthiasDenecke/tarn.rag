@@ -98,6 +98,8 @@ async def test_open_wires_shared_resources_then_close_releases(tmp_path):
         assert ingestion is tarn._ingestion and ingestion.repository is tarn._repository
         ctx = tarn.retrieval_context()
         assert ctx.store is tarn._repository and ctx.embedder is tarn._embedder
+        # …and the rest of what retrieve() runs with, so a swept spec with a reranker / bridge works too
+        assert ctx.llm is tarn._llm and ctx.license_policy is not None and ctx.cross_encoder is not None
     # __aexit__ -> close() disconnected the store
 
 
@@ -217,10 +219,10 @@ def test_split_stem_collisions_keeps_the_first_per_stem(tmp_path):
 
 
 async def test_close_releases_built_resources(tmp_path):
-    """``close`` releases what the facade BUILT: the generation LLM (when not injected) and the ingestion
+    """``close`` releases what the facade BUILT: the session LLM (when not injected) and the ingestion
     engine's queue — plus the shared store. Recorded through the same ``aclose`` seams the engines use."""
     settings = _plumbing_settings(tmp_path)
-    settings.llm.api_key = "k"  # lets _build_llm construct a backend (lazily connecting — no network)
+    settings.llm.api_key = "k"  # lets generation build over the session LLM (lazily connecting — no network)
     tarn = await TarnRag(settings).open()
     await tarn.docs()  # lazily builds the ingestion engine
     tarn._gen()  # lazily builds the generation engine over the built LLM
@@ -233,10 +235,11 @@ async def test_close_releases_built_resources(tmp_path):
         async def aclose(self) -> None:
             closed.append(self._name)
 
-    tarn._generation.llm = _Closable("llm")
+    assert tarn._generation.llm is tarn._llm is tarn._retrieval._llm  # ONE LLM, shared
+    tarn._llm = _Closable("llm")
     tarn._ingestion._queue = _Closable("queue")
     await tarn.close()
-    assert closed == ["llm", "queue"]  # the built LLM and the engine's queue are both released
+    assert sorted(closed) == ["llm", "queue"]  # the built LLM and the engine's queue are both released
 
 
 async def test_close_leaves_an_injected_llm_to_its_owner(tmp_path):

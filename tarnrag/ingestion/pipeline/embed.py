@@ -3,9 +3,12 @@
 Uses the shared ONNX ``OnnxEmbedder`` (passage side), so ingestion embeds with exactly the
 pipeline retrieval will replay for queries (§5.3). The embedding identity lives on the stage's
 ``Config`` as an ``EmbeddingSettings`` (the factory copies ``settings.embedding`` in, so it stays
-in sync with the retrieval-side embedder and its fingerprint). The embedder is built lazily via
-``Embedder.create`` (local ONNX or an API backend, per ``embedding.provider``); tests inject a fake by
-setting ``stage._embedder`` (anything with ``embed_passages(list[str]) -> list[list[float]]``).
+in sync with the retrieval-side embedder and its fingerprint). ``IngestionEngine.create`` binds the
+engine's shared embedder (:meth:`EmbedStage.bind_embedder`) — the very instance whose fingerprint it
+stamps into ``index_meta``, and in a ``TarnRag`` session the one retrieval embeds queries with, so the
+model is loaded once. A stage used on its own builds one lazily via ``Embedder.create`` (local ONNX or an
+API backend, per ``embedding.provider``) and releases it in :meth:`EmbedStage.close`; tests inject a fake
+by setting ``stage._embedder`` (anything with ``embed_passages(list[str]) -> list[list[float]]``).
 
 When ``embedding.inject_header_path`` is set, each chunk's section header path is prepended to its
 text before embedding (the chunk's structural context, from ``item.provenance.header_path``). It's an
@@ -43,7 +46,18 @@ class EmbedStage(PipelineStage):
 
     def __init__(self, config: EmbedStage.Config) -> None:
         super().__init__(config)
-        self._embedder = None  # lazy; built on first use (or injected by tests)
+        self._embedder = None  # lazy; built on first use (or bound / injected)
+        self._owns_embedder = False  # True only for the one _get_embedder built itself
+
+    def bind_embedder(self, embedder) -> None:
+        """Use ``embedder`` (the engine's shared one) instead of building a second copy of the model."""
+        self._embedder = embedder
+        self._owns_embedder = False
+
+    def close(self) -> None:
+        """Release the embedder this stage built itself (a bound one belongs to the engine)."""
+        if self._owns_embedder and self._embedder is not None:
+            self._embedder.close()
 
     def process(self, item: PipelineItem) -> Iterator[Embedding]:
         yield from self.process_batch([item])
@@ -90,4 +104,5 @@ class EmbedStage(PipelineStage):
             self._embedder = Embedder.create(
                 self.config.embedding, self.config.embedding_dimension
             )
+            self._owns_embedder = True
         return self._embedder

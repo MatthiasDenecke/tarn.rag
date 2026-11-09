@@ -82,19 +82,27 @@ HYBRID_RETRIEVAL: dict[str, object] = {
 async def _eval_engines(settings: Settings) -> AsyncIterator[tuple[IngestionEngine, RetrievalEngine]]:
     """One ephemeral SQLite store + one shared embedder + the ingestion/retrieval engines over it — the
     substrate every benchmark question is ingested into and retrieved from (the store is cleared per
-    question by the caller). Disconnected on exit."""
+    question by the caller). Everything is released on exit — the engines' own resources, the embedder,
+    the store."""
     embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
     with tempfile.TemporaryDirectory() as tmp:
         repo = await DocumentRepository.create(
             DatabaseSettings(document_url=f"sqlite:///{tmp}/eval.db"), settings.EMBEDDING_DIMENSION
         )
+        ingest: IngestionEngine | None = None
+        retrieval: RetrievalEngine | None = None
         try:
             await IngestionEngine.ensure_index_meta(repo, embedder)
             ingest = await IngestionEngine.create(settings, repository=repo, embedder=embedder)
             retrieval = await RetrievalEngine.create(settings, repository=repo, embedder=embedder)
             yield ingest, retrieval
         finally:
-            await repo.disconnect()  # idempotent dispose; shared by the engines (injected)
+            if retrieval is not None:
+                await retrieval.aclose()  # its own LLM client; the injected store/embedder stay ours
+            if ingest is not None:
+                await ingest.aclose()
+            embedder.close()
+            await repo.disconnect()
 
 
 async def _ingest_passages(ingest: IngestionEngine, item: BenchItem) -> None:
@@ -178,15 +186,18 @@ async def build_corpus_index(
     )
     await IngestionEngine.ensure_index_meta(repo, embedder)
     ingest = await IngestionEngine.create(settings, repository=repo, embedder=embedder)
-    existing = await ingest.list_documents()
-    if len(existing) == len(corpus):  # already indexed — reuse, skip the (slow) embedding
+    try:
+        existing = await ingest.list_documents()
+        if len(existing) == len(corpus):  # already indexed — reuse, skip the (slow) embedding
+            return repo, embedder
+        for summary in existing:  # clear a partial / stale build, then ingest fresh
+            await ingest.delete_document(summary.document_id)
+        await ingest.ingest_content(
+            [{"content": text, "title": title, "source_type": "text"} for title, text in corpus]
+        )
         return repo, embedder
-    for summary in existing:  # clear a partial / stale build, then ingest fresh
-        await ingest.delete_document(summary.document_id)
-    await ingest.ingest_content(
-        [{"content": text, "title": title, "source_type": "text"} for title, text in corpus]
-    )
-    return repo, embedder
+    finally:
+        await ingest.aclose()  # its own resources only — the repo + embedder go back to the caller
 
 
 async def run_over_corpus(
@@ -213,7 +224,10 @@ async def run_over_corpus(
             )
         return _score(item.query, result)
 
-    per_query = await asyncio.gather(*(_one(item) for item in items))  # gather preserves item order
+    try:
+        per_query = await asyncio.gather(*(_one(item) for item in items))  # gather preserves item order
+    finally:
+        await retrieval.aclose()  # its own LLM client; the injected store/embedder stay the caller's
     return _aggregate(list(per_query))
 
 
@@ -247,8 +261,11 @@ async def sweep_over_corpus(
 
     tasks = [_one(name, p, item) for item in items for name, p in pipelines.items()]
     per_query: dict[str, list] = {name: [] for name in pipelines}
-    for name, scored in await asyncio.gather(*tasks):  # item-major order preserved per reasoner
-        per_query[name].append(scored)
+    try:
+        for name, scored in await asyncio.gather(*tasks):  # item-major order preserved per reasoner
+            per_query[name].append(scored)
+    finally:
+        await retrieval.aclose()  # its own LLM client; the injected store/embedder stay the caller's
     return {name: _aggregate(pq) for name, pq in per_query.items()}
 
 

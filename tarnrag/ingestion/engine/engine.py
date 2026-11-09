@@ -35,6 +35,7 @@ from tarnrag.contracts import DocumentFactsSource, IndexMeta, PipelineItem
 from tarnrag.storage.repository import DocumentRepository
 from tarnrag.storage.status import DocumentStatusReader
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
+from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.engine.queue import (
     InMemoryJobQueue,
@@ -68,6 +69,7 @@ class IngestionEngine(Engine):
         auto_drain: bool = False,  # embedded: process the whole DAG inline on each ingest
         debug: bool = False,  # gates the debug-only methods (set from APP__DEBUG)
         id_policy: IdPolicy = "uuid",  # how document ids are assigned (set from ID_POLICY)
+        embedder: Embedder | None = None,  # the shared embedder, when this engine built it (to release)
     ):
         self.pipeline = pipeline
         self.orchestrator = orchestrator
@@ -86,6 +88,7 @@ class IngestionEngine(Engine):
         # Serializes the embedded drain: two concurrent ingest() calls would otherwise interleave two
         # run() loops over the one queue (splitting waves/batches arbitrarily between them).
         self._drain_lock = asyncio.Lock()
+        self._owned_embedder = embedder  # released by aclose (an injected embedder is never passed here)
 
     # ----- construction -----
 
@@ -103,19 +106,31 @@ class IngestionEngine(Engine):
 
         A composition root (e.g. ``TarnRag``) may inject a pre-built ``repository`` + ``embedder`` so
         one store + embedder is shared across the engines instead of each building its own — pass both
-        or neither. The ``embedder`` is used only to stamp the index identity (``write_index_meta``);
-        the Embed stage builds its own from ``Settings``."""
+        or neither. The ``embedder`` stamps the index identity (``write_index_meta``) AND is bound into
+        every Embed stage, so passages are embedded by the very instance whose fingerprint was stamped
+        (and the model is loaded once). What this builds, it owns and :meth:`aclose` releases; what is
+        injected stays the caller's."""
         settings = settings or get_settings()
         obs = Observability.create(settings.observability)
-        if repository is None and embedder is None:
+        built = repository is None and embedder is None
+        if built:
             repository = await DocumentRepository.create(settings.database, settings.EMBEDDING_DIMENSION)
             embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
         elif repository is None or embedder is None:
             raise ValueError("inject both repository and embedder, or neither")
-        # The engine is the index producer: establish/confirm the §8 build/identity record (the sinks
-        # then persist document/chunk/embedding data into the same repository; job_status lives there too).
-        await cls.ensure_index_meta(repository, embedder)
+        try:
+            # The engine is the index producer: establish/confirm the §8 build/identity record (the sinks
+            # then persist document/chunk/embedding data into the same repository; job_status lives there).
+            await cls.ensure_index_meta(repository, embedder)
+        except BaseException:
+            if built:  # an index-identity conflict: release what we just built before re-raising
+                embedder.close()
+                await repository.disconnect()
+            raise
         pipeline = cls.build_pipeline(settings)
+        for stage in pipeline.stages:
+            if isinstance(stage, EmbedStage):
+                stage.bind_embedder(embedder)
 
         if settings.MODE == "distributed":
             queue: JobEnqueuer = await PgQueuerJobQueue.connect(
@@ -136,8 +151,9 @@ class IngestionEngine(Engine):
             pipeline, orchestrator, repository, observability=obs,
             staging_dir=settings.UPLOAD_DIR,  # facts_source defaults to the repository
             queue=queue, auto_drain=auto_drain, debug=settings.app.debug,
-            id_policy=settings.ID_POLICY,
+            id_policy=settings.ID_POLICY, embedder=embedder if built else None,
         )
+        engine.owns_repository = built
         if auto_drain:  # register the in-process worker that ingest() will drive
             _attach_worker(queue, orchestrator, obs)
         return engine
@@ -244,12 +260,20 @@ class IngestionEngine(Engine):
         # Validate the id supply against the policy BEFORE staging, so a bad call leaves no
         # orphaned files; ingest_paths then resolves ids + hashes from the staged files.
         self._check_supply(self._align_source_ids(source_ids, len(streams)))
-        # Offload the blocking disk copy so the event loop isn't stalled on large files.
-        paths = [
-            await asyncio.to_thread(self._stage_stream, filename, source)
-            for filename, source in streams
-        ]
-        return await self.ingest_paths(paths, source_ids=source_ids, extractor=extractor)
+        staged: list[str] = []
+        try:
+            for filename, source in streams:  # offload the blocking disk copy (large files)
+                staged.append(await asyncio.to_thread(self._stage_stream, filename, source))
+        except BaseException:
+            self._discard(staged)  # nothing was submitted — don't leave half a batch behind
+            raise
+        try:
+            return await self.ingest_paths(staged, source_ids=source_ids, extractor=extractor)
+        finally:
+            # Embedded: the whole pipeline ran in-process, so the staged copies are spent. Distributed
+            # workers read them later, from the shared UPLOAD_DIR — those stay for the deployment to expire.
+            if self._auto_drain:
+                self._discard(staged)
 
     async def status(self, document_id: str) -> DocumentStatus | None:
         """Document-level status derived from persisted data (pending | in_progress |
@@ -307,10 +331,16 @@ class IngestionEngine(Engine):
 
     async def aclose(self) -> None:
         """Release what this engine built: the queue (the pgQueuer asyncpg pool in distributed mode —
-        the InMemory queue holds nothing) and then the repository (the base ``Engine`` lifecycle)."""
+        the InMemory queue holds nothing), any embedder it (or a stage) built, and then — when ``create``
+        built it — the repository (the base ``Engine`` lifecycle). Injected resources stay the caller's."""
         closer = getattr(self._queue, "aclose", None)
         if closer is not None:
             await closer()
+        for stage in self.pipeline.stages:  # a stage-built embedder (one not bound by create)
+            if (close := getattr(stage, "close", None)) is not None:
+                close()
+        if self._owned_embedder is not None:
+            self._owned_embedder.close()
         await super().aclose()
 
     # ----- debug (gated on APP__DEBUG) -----
@@ -389,6 +419,12 @@ class IngestionEngine(Engine):
             },
         )
 
+    @staticmethod
+    def _discard(paths: list[str]) -> None:
+        """Remove staged stream copies (best effort — a vanished file is already gone)."""
+        for path in paths:
+            Path(path).unlink(missing_ok=True)
+
     def _stage_stream(self, filename: str, source: BinaryIO) -> str:
         """Stream a binary file-like under a unique name (extension preserved so the loader
         dispatches correctly) and return the path. ``copyfileobj`` copies in chunks — no
@@ -396,8 +432,12 @@ class IngestionEngine(Engine):
         ext = filename.rsplit(".", 1)[-1].lower() if "." in (filename or "") else "bin"
         dest = Path(self.staging_dir) / f"{uuid.uuid4()}.{ext}"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as out:
-            shutil.copyfileobj(source, out)
+        try:
+            with open(dest, "wb") as out:
+                shutil.copyfileobj(source, out)
+        except BaseException:
+            dest.unlink(missing_ok=True)  # a stream that broke mid-copy leaves no partial file behind
+            raise
         return str(dest)
 
 

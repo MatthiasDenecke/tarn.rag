@@ -24,7 +24,12 @@ from tarnrag.core.resources.embedder import Embedder
 class _ApiEmbedder(Embedder):
     """Shared base for HTTP embedding APIs: batching, L2-normalization, identity/fingerprint, and the
     single ``_post`` seam. Subclasses set ``PROVIDER`` / ``DEFAULT_BASE_URL`` / ``API_KEY_ENV`` and
-    implement ``_embed_batch`` (the provider's request shape + response parse)."""
+    implement ``_embed_batch`` (the provider's request shape + response parse).
+
+    ``query_prefix`` / ``passage_prefix`` are prepended exactly as the ONNX backend does (an
+    OpenAI-compatible endpoint serving an E5 / BGE model needs them; Voyage / Gemini express the same
+    distinction with ``input_type`` / ``taskType`` and usually leave them empty). Prefixes and the
+    embed-time ``inject_header_path`` / ``contextualize_tables`` flags ride the fingerprint when set."""
 
     PROVIDER: str = ""
     DEFAULT_BASE_URL: str = ""
@@ -39,9 +44,17 @@ class _ApiEmbedder(Embedder):
         base_url: str = "",
         batch_size: int = 32,
         timeout: float = 30.0,
+        query_prefix: str = "",
+        passage_prefix: str = "",
+        inject_header_path: bool = False,
+        contextualize_tables: bool = False,
     ):
         self.model = model
         self.embedding_dim = embedding_dim
+        self.query_prefix = query_prefix
+        self.passage_prefix = passage_prefix
+        self.inject_header_path = inject_header_path
+        self.contextualize_tables = contextualize_tables
         self._api_key = api_key
         self._base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.batch_size = batch_size
@@ -57,6 +70,10 @@ class _ApiEmbedder(Embedder):
             base_url=embedding.api_base_url,
             batch_size=embedding.batch_size,
             timeout=embedding.api_timeout,
+            query_prefix=embedding.query_prefix,
+            passage_prefix=embedding.passage_prefix,
+            inject_header_path=embedding.inject_header_path,
+            contextualize_tables=embedding.contextualize_tables,
         )
 
     # ---------------- identity (no network) ----------------
@@ -68,11 +85,19 @@ class _ApiEmbedder(Embedder):
         return f"{self.PROVIDER}:{self.model}"
 
     def _identity(self) -> dict[str, Any]:
+        """Provider / model / dim / normalization, plus — only when set, so an index built with the
+        defaults keeps its fingerprint — the prefixes and the embed-time text transforms (each changes the
+        vectors)."""
         return {
             "provider": self.PROVIDER,
             "model": self.model,
             "embedding_dim": self.embedding_dim,
             "normalize": "l2",
+            **({"query_prefix": self.query_prefix} if self.query_prefix else {}),
+            **({"passage_prefix": self.passage_prefix} if self.passage_prefix else {}),
+            **self._embed_time_identity(
+                inject_header_path=self.inject_header_path, contextualize_tables=self.contextualize_tables
+            ),
         }
 
     def config_fingerprint(self) -> str:
@@ -85,16 +110,26 @@ class _ApiEmbedder(Embedder):
             "embedding_model_id": ident["model"],
             "embedding_dim": str(ident["embedding_dim"]),
             "normalize": ident["normalize"],
+            "query_prefix": self.query_prefix,
+            "passage_prefix": self.passage_prefix,
+            "inject_header_path": str(self.inject_header_path),
+            "contextualize_tables": str(self.contextualize_tables),
             "embedding_config_fingerprint": self.config_fingerprint(),
         }
 
     # ---------------- inference ----------------
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        return self._embed(texts, is_query=False)
+        return self._embed([self.passage_prefix + t for t in texts], is_query=False)
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed([text], is_query=True)[0]
+        return self._embed([self.query_prefix + text], is_query=True)[0]
+
+    def close(self) -> None:
+        """Close the ``httpx`` client, if one was opened (idempotent; a later embed reopens one)."""
+        if self._client is not None:
+            client, self._client = self._client, None
+            client.close()
 
     def _embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
         if not texts:

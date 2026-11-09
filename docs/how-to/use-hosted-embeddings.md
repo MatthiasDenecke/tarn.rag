@@ -40,4 +40,8 @@ index whose fingerprint doesn't match the current settings**. Practically:
 - For offline CI or demos, `EMBEDDING__PROVIDER=hash` is a deterministic, model-free embedder —
   no semantics, never for production.
 - Asymmetric models that need instruction prefixes are supported via `EMBEDDING__QUERY_PREFIX` /
-  `EMBEDDING__PASSAGE_PREFIX` — see the [settings reference](../reference/settings.md).
+  `EMBEDDING__PASSAGE_PREFIX` — they are prepended to the text sent to the API exactly as for the local
+  model (useful for an OpenAI-compatible endpoint serving E5 / BGE; Voyage and Gemini already distinguish
+  queries from documents natively). Prefixes, `EMBEDDING__INJECT_HEADER_PATH`, and
+  `EMBEDDING__CONTEXTUALIZE_TABLES` all join the fingerprint when set — see the
+  [settings reference](../reference/settings.md).
