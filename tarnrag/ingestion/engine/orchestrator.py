@@ -89,11 +89,16 @@ class PipelineOrchestrator(BatchCoordinator):
 
     async def ingest_documents(self, items: list[PipelineItem]) -> list[str]:
         """Enqueue one root job per document for the first stage. Returns the public
-        document_ids (== source_ids); job ids never leave the system."""
+        document_ids (== source_ids); job ids never leave the system.
+
+        A (re-)submission starts the document's job history afresh: the job_status rows of any earlier
+        ingest of the same id are cleared first, so a stale ``failed`` row from a run that has since been
+        superseded can't pin the document's status to ``failed`` forever."""
         first_stage = self.dag.stages[0].name
         document_ids = []
         for item in items:
             job = self._make_job(item, first_stage)
+            await self.repository.delete_document_jobs(job.document_id)
             await self._enqueue(job)
             document_ids.append(job.document_id)
         if self.obs:

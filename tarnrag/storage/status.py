@@ -49,6 +49,8 @@ class DocumentStatusReader:
             return "failed"
         if not facts.present:
             return "pending"  # queued, no data persisted yet
+        if states & {"queued", "processing"}:
+            return "in_progress"  # a (re-)ingest is still running — the data on disk may be the old one
         # Complete once every retrieval unit has its vector (section parents are never embedded).
         indexable = facts.chunk_count if facts.leaf_count is None else facts.leaf_count
         if indexable and facts.embedding_count >= indexable:

@@ -226,6 +226,10 @@ async def test_document_status_and_jobs(repo):
     await repo.store_embeddings(
         [Embedding(chunk_id=cid, vector=[1.0, 0.0, 0.0])]
     )
+    # The data is all there, but its job is still queued — e.g. a re-ingest whose new run hasn't
+    # replaced the old data yet: in progress, not complete.
+    assert (await repo.document_status("s1"))["status"] == "in_progress"
+    await repo.record_job("s1", "j1", "LoadAndParse", "completed")
     assert await repo.document_status("s1") == {
         "document_id": "s1",
         "status": "complete",
@@ -577,3 +581,37 @@ async def test_index_meta_round_trip(repo):
     await repo.write_index_meta({"schema_version": "2"})
     meta = await repo.index_meta()
     assert meta["schema_version"] == "2" and meta["embedding_config_fingerprint"] == "fp-1"
+
+
+async def test_store_chunks_is_idempotent_on_retry(repo):
+    """HIGH-03: a retried Chunk job (worker died after the commit, before the ack) rewrites the same chunk
+    set — same content-addressed ids, no second copy in ``chunks`` or the sparse index."""
+    await repo.store_document(Document(content="d", metadata={"source_id": "s1"}))
+
+    def batch(first_text: str = "alpha") -> list:  # what ChunkResultSink builds: parent_doc_id is set
+        return [
+            _chunk(text, i, 2).model_copy(update={"parent_doc_id": "s1"})
+            for i, text in enumerate([first_text, "beta"])
+        ]
+
+    first = await repo.store_chunks(batch())
+    second = await repo.store_chunks(batch())
+    assert first == second  # deterministic ids — in-flight Embed jobs still point at real chunks
+    assert (await repo.document_facts("s1")).chunk_count == 2
+    async with repo.engine.connect() as conn:
+        fts = (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0]
+    assert fts == 2
+    # Changed content at the same position is a different chunk (a stale citation can't resolve to it).
+    [changed, _] = await repo.store_chunks(batch("alpha v2"))
+    assert changed != first[0] and await repo.get_chunk(first[0]) is None
+
+
+async def test_upsert_inserts_then_updates_in_place(repo):
+    await repo.write_index_meta({"k": "1"})
+    await repo.write_index_meta({"k": "2", "j": "x"})
+    assert await repo.index_meta() == {"k": "2", "j": "x"}
+    await repo.record_job("s1", "j1", "Chunk", "queued")
+    await repo.record_job("s1", "j1", "Chunk", "failed", "boom")  # same job: updated, not duplicated
+    assert await repo.document_jobs("s1") == [
+        {"job_id": "j1", "stage_name": "Chunk", "status": "failed", "error": "boom"}
+    ]

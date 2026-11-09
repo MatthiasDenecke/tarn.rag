@@ -159,3 +159,19 @@ async def test_reingest_replaces_chunks(pg_repo):
         [Chunk(parent_doc_id="s1", content="only one now", chunk_index=0, total_chunks=1, metadata={})],
     )
     assert (await pg_repo.document_facts("s1")).chunk_count == 1
+
+
+async def test_concurrent_upserts_of_one_key_never_collide(pg_repo):
+    """HIGH-04: the old UPDATE-then-INSERT let two READ COMMITTED writers both miss the UPDATE and collide
+    on the INSERT (IntegrityError). ``INSERT … ON CONFLICT DO UPDATE`` is one atomic statement."""
+    import asyncio
+
+    for trial in range(5):
+        meta = [pg_repo.write_index_meta({f"k{trial}": str(i)}) for i in range(8)]
+        docs = [
+            pg_repo.store_document(Document(content=str(i), metadata={"source_id": f"race{trial}"}))
+            for i in range(8)
+        ]
+        results = await asyncio.gather(*meta, *docs, return_exceptions=True)
+        assert not [r for r in results if isinstance(r, Exception)]
+    assert len(await pg_repo.index_meta()) == 5
