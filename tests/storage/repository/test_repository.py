@@ -615,3 +615,55 @@ async def test_upsert_inserts_then_updates_in_place(repo):
     assert await repo.document_jobs("s1") == [
         {"job_id": "j1", "stage_name": "Chunk", "status": "failed", "error": "boom"}
     ]
+
+
+def test_postgres_driver_url_pins_asyncpg_for_every_postgres_scheme():
+    """HIGH-05: ``postgres://`` (the alias Heroku / Render / Supabase hand out) and a sync-driver URL both
+    become asyncpg URLs; the password survives."""
+    pytest.importorskip("pgvector")
+    from tarnrag.storage.repository.postgres import PostgresRepository
+
+    repo = PostgresRepository("postgresql://u:p@h/db", embedding_dimension=3)  # no connection is made
+    for url in ("postgres://u:p@h:5432/db", "postgresql://u:p@h:5432/db", "postgresql+psycopg2://u:p@h:5432/db"):
+        assert repo._driver_url(url) == "postgresql+asyncpg://u:p@h:5432/db"
+
+
+async def test_hydrate_reads_the_chunks_table_once(repo):
+    """MED-08: text, licensing and provenance come back from ONE ``chunks`` query (the provenance columns
+    ride along) — not a second ``chunks`` round trip for the provenance."""
+    from sqlalchemy import event
+
+    _, ids = await repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s1"}), [_chunk("a", 0, 2), _chunk("b", 1, 2)]
+    )
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(repo.engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        records = await repo.hydrate(list(ids))
+    finally:
+        event.remove(repo.engine.sync_engine, "before_cursor_execute", _record)
+    assert [r.chunk_id for r in records] == list(ids)
+    assert sum(1 for s in statements if "FROM chunks" in s) == 1
+
+
+async def test_clearing_a_document_is_not_bounded_by_the_bind_parameter_limit(repo):
+    """MED-08: clearing a document's search-index rows uses a subquery, so it doesn't expand one bind
+    parameter per chunk (which fails past SQLITE_MAX_VARIABLE_NUMBER — lowered here to make it cheap)."""
+    import sqlite3
+
+    from sqlalchemy import event
+
+    @event.listens_for(repo.engine.sync_engine, "connect")
+    def _low_limit(dbapi_connection, _record):
+        dbapi_connection.driver_connection._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+
+    await repo.engine.dispose()  # new connections pick up the low limit
+    chunks = [_chunk(f"chunk {i}", i, 120) for i in range(120)]
+    await repo.store_document_with_chunks(Document(content="d", metadata={"source_id": "big"}), chunks)
+    assert await repo.delete_document("big") is True
+    async with repo.engine.connect() as conn:
+        assert (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0] == 0

@@ -36,6 +36,7 @@ from tarnrag.storage.repository import chunk_provenance as cp
 from tarnrag.contracts import (
     Candidate,
     Chunk,
+    ChunkRecord,
     ChunkStore,
     CorpusStatus,
     Document,
@@ -131,7 +132,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         # The read-side assembly companion (child-table fetches + ChunkProvenance/ChunkRecord
         # construction) — split out of this class so it stays the port implementation.
         self.reads = ReadAssembler(
-            self.chunks, self.table_cells, self.chunk_annotations, self.method_chunks
+            self.chunks, self.table_cells, self.chunk_annotations, self.method_chunks, self.documents
         )
 
     # ---------------- dialect hooks (subclasses implement) ----------------
@@ -461,6 +462,13 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         # now annotates the document (the Enrich stage) and rides into chunks via ChunkProvenance;
         # a general chunk-metadata bag is deferred. The method stays on the port as a latent capability.
         return None
+
+    async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
+        """§8 hydration (the ``RetrievalStore`` port): canonical text + provenance + license for
+        ``chunk_ids``, preserving input order. Shared by both dialects — it reads only normal tables
+        (``ReadAssembler.hydrate``: one ``chunks`` query + one per child table)."""
+        async with self.engine.connect() as conn:
+            return await self.reads.hydrate(conn, chunk_ids)
 
     # ---------------- dialect search-index hooks (vec0 / FTS live outside the FK graph) ----------------
 

@@ -23,6 +23,9 @@ DATABASE__DOCUMENT_URL=postgresql://user:password@localhost:5432/tarn_rag_docs  
 DATABASE__QUEUE_URL=postgresql://user:password@localhost:5432/tarn_rag_queue     # the pgQueuer job queue
 ```
 
+Any Postgres URL form works for `DATABASE__DOCUMENT_URL` (`postgresql://`, or the `postgres://` alias
+many hosting providers hand out); the repository always drives it through asyncpg.
+
 `Settings` fails fast on a mismatch: `MODE=distributed` requires a Postgres `document_url` **and** a
 `queue_url`; `MODE=embedded` requires SQLite (it is single-process by design). You cannot silently
 run distributed on the SQLite default.

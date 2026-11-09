@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 from sqlalchemy import Table, and_, false, func, or_, select, true
+from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
 from pgvector.sqlalchemy import Vector
 
+from tarnrag.contracts import Candidate, ChunkFilter
+from tarnrag.core.text import lexical_query
 from tarnrag.storage.repository.base import DocumentRepository
-from tarnrag.contracts import Candidate, ChunkFilter, ChunkRecord
 
 
 class PostgresRepository(DocumentRepository):
@@ -23,7 +25,10 @@ class PostgresRepository(DocumentRepository):
     """
 
     def _driver_url(self, url: str) -> str:
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        """Pin the asyncpg driver on any Postgres URL — ``postgresql://``, the ``postgres://`` alias many
+        hosts hand out (Heroku / Render / Supabase; SQLAlchemy removed that dialect name), or one naming a
+        sync driver (``postgresql+psycopg2://``), which an async engine can't run."""
+        return make_url(url).set(drivername="postgresql+asyncpg").render_as_string(hide_password=False)
 
     def _vector_type(self):
         return Vector(self.embedding_dimension)
@@ -111,16 +116,20 @@ class PostgresRepository(DocumentRepository):
         self, query_text: str, k: int, filter: ChunkFilter | None = None
     ) -> list[Candidate]:
         """§8 sparse retrieval over a ``to_tsvector('english', text)`` GIN index (``ts_rank_cd``, best
-        first). ``websearch_to_tsquery`` parses the raw text safely AND honors exact-match intent — a
-        double-quoted span becomes a phrase query (adjacency-required, the Postgres counterpart of the
-        SQLite builder's required phrases); unquoted terms are AND-ed exactly as ``plainto_tsquery`` did.
-        Dotted identifiers (``6.4.2``) tokenize as single version/file lexemes on BOTH the index and the
-        query side (the same ``english`` parser), so they match exactly without special handling.
-        ``raw_score`` is ts_rank (higher better). Restricted to retrieval units (leaf chunks — the GIN
-        index covers every chunk row, section parents included) and ``filter``, as in :meth:`dense_knn`
-        (pre-filtered + over-fetched via ``_overfetch``)."""
+        first) — the same query semantics as SQLite's FTS5 builder, from the same parse
+        (:func:`~tarnrag.core.text.lexical_query`): every required phrase (a quoted span, a split
+        identifier) must match adjacently, AND-ed with an **OR** of the remaining terms — recall-first, so
+        a natural-language question matches chunks holding *some* of its words, ranked by how many. (The
+        builder used to hand the raw text to ``websearch_to_tsquery``, which ANDs every unquoted word: one
+        word missing from a chunk and it returned nothing — hybrid degraded to dense-only on Postgres.)
+        Identifiers (``6.4.2``) reach ``phraseto_tsquery`` raw, so Postgres' parser reads them as the same
+        single version lexeme it indexed. ``raw_score`` is ts_rank (higher better). Restricted to retrieval
+        units (leaf chunks — the GIN index covers every chunk row, section parents included) and
+        ``filter``, as in :meth:`dense_knn` (pre-filtered + over-fetched via ``_overfetch``)."""
+        tsq = self._tsquery(query_text)
+        if tsq is None:
+            return []
         tsv = func.to_tsvector("english", self.chunks.c.text)
-        tsq = func.websearch_to_tsquery("english", query_text)
         score = func.ts_rank_cd(tsv, tsq).label("score")
         base = select(self.chunks.c.chunk_id, score).where(tsv.op("@@")(tsq), self._search_condition(filter))
         async with self.engine.connect() as conn:
@@ -130,6 +139,24 @@ class PostgresRepository(DocumentRepository):
                 return (await conn.execute(base.order_by(score.desc()).limit(window))).all()
 
             return await self._overfetch(k, total, page)
+
+    @staticmethod
+    def _tsquery(query_text: str) -> ColumnElement | None:
+        """The tsquery rendering of :func:`lexical_query`: ``phrase₁ && … && (term₁ | term₂ | …)`` — each
+        phrase via ``phraseto_tsquery``, the terms via ``websearch_to_tsquery`` with ``or`` between them
+        (bound parameters throughout; the terms are bare word pieces, so no websearch operator can sneak
+        in — the literal word ``or`` is dropped, it's a stopword anyway). ``None`` ⇒ nothing usable."""
+        parsed = lexical_query(query_text)
+        parts: list[ColumnElement] = [func.phraseto_tsquery("english", phrase) for phrase in parsed.phrases]
+        terms = [t for t in parsed.terms if t != "or"]
+        if terms:
+            parts.append(func.websearch_to_tsquery("english", " or ".join(terms)))
+        if not parts:
+            return None
+        tsq = parts[0]
+        for part in parts[1:]:
+            tsq = tsq.op("&&")(part)
+        return tsq
 
     def _search_condition(self, filter: ChunkFilter | None) -> ColumnElement[bool]:
         """The full search predicate over ``chunks``: retrieval units only (a section parent is hydrated,
@@ -164,32 +191,3 @@ class PostgresRepository(DocumentRepository):
                 )
                 conds.append(c.chunk_id.in_(select(mc.chunk_id).where(refs)))
         return and_(*conds) if conds else true()
-
-    async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
-        """
-        §8 hydration via SQLAlchemy over the normal tables (chunks joined to documents, plus
-        method_chunks), preserving input order. No virtual tables here, so unlike SQLite this
-        stays in Core.
-        """
-        if not chunk_ids:
-            return []
-        c, d = self.chunks, self.documents
-        stmt = (
-            select(
-                c.c.chunk_id, c.c.text, c.c.document_id, d.c.source_kind,
-                d.c.standard_id, c.c.locator, c.c.license_class,
-                c.c.ai_grounding_allowed, c.c.available,
-            )
-            .select_from(c.join(d, c.c.document_id == d.c.document_id))
-            .where(c.c.chunk_id.in_(chunk_ids))
-        )
-        async with self.engine.connect() as conn:
-            by_id = {r[0]: r for r in (await conn.execute(stmt)).all()}
-            prov = await self.reads.chunk_provenance(conn, chunk_ids)
-            methods = await self.reads.methods_by_chunk(conn, chunk_ids)  # one query, not one per chunk
-            records = [
-                self.reads.create_chunk_record(r, methods.get(cid, []), prov.get(cid))
-                for cid in chunk_ids
-                if (r := by_id.get(cid)) is not None
-            ]
-        return records
