@@ -90,7 +90,7 @@ backfill past dropped chunks.
 
 | Tag | Component | Notes |
 |---|---|---|
-| `auto_merge` | `AutoMerger` | Recombines sibling chunks into their parent (`parent_chunk_id` provenance). |
+| `auto_merge` | `AutoMerger` | Recombines ≥ `min_siblings` sibling chunks into their section parent (`parent_chunk_id` provenance), repeating up the section tree; a parent must pass the query's license/scope/grounding filter. |
 
 ### Rerankers (optional slot)
 

@@ -12,6 +12,7 @@ optional ``GroundingChecker`` and owns the flow:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Literal
 
 from pydantic import Field
@@ -22,7 +23,7 @@ from tarnrag.generation.components.grounding import GroundingChecker, Verdict
 from tarnrag.generation.components.reasoner import Reasoner, SingleHopReasoner
 from tarnrag.generation.context import GenerationContext
 from tarnrag.generation.types import GenerationResult
-from tarnrag.retrieval.types import Query
+from tarnrag.retrieval.types import Purpose, Query
 
 
 class GenerationPipeline(Component):
@@ -61,6 +62,11 @@ class GenerationPipeline(Component):
 
     async def answer(self, query: Query, ctx: GenerationContext) -> GenerationResult:
         self.ensure_built()
+        # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — whatever
+        # purpose the caller's Query carries. This is the one choke point every generation path (engine,
+        # facade, evals) goes through; the reasoners derive their sub-queries with ``replace``, so the
+        # purpose — and with it the ai_grounding_allowed pre-filter (ModusQ §5.6) — reaches every search.
+        query = replace(query, purpose=Purpose.GENERATION_GROUNDING)
         reasoned = await self._reasoner.reason(query, ctx)
         if reasoned.abstained:  # a gate refused BEFORE the read — surface it; nothing to verify
             return GenerationResult(

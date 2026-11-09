@@ -3,14 +3,19 @@
 A ``RoutingRetrievalPipeline`` is a ``Searcher`` (so the engine builds it from the ``RETRIEVAL_PIPELINE``
 spec in place of a plain pipeline). It holds a ``QueryClassifier`` + a ``{query_type → Searcher}`` route
 map + a ``default`` ``Searcher``. On ``search``: if the query isn't already classified, run the classifier
-to populate ``query.query_type`` (+ annotations); then dispatch to ``routes.get(query_type, default)``.
-Routes are themselves ``Searcher``s (built recursively), so a route is just another pipeline spec — sparse
-for ``lexical``, dense for ``semantic``, a nested router, … — and the route map is the deployment's config,
-tuned from the segmented eval.
+to populate ``query_type`` (+ annotations) on a *copy* — the caller's ``Query`` is never mutated; then
+dispatch to ``routes.get(query_type, default)``. Routes are themselves ``Searcher``s (built recursively), so
+a route is just another pipeline spec — sparse for ``lexical``, dense for ``semantic``, a nested router, … —
+and the route map is the deployment's config, tuned from the segmented eval.
+
+Nesting: a label this router's classifier produced is *its* route key, not the next router's — so a nested
+router receives the query with ``query_type`` cleared (annotations kept) and runs its own classifier. A
+caller-supplied ``query_type`` is the caller's routing decision and passes through unchanged at every level.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Literal
 
 from pydantic import Field
@@ -53,10 +58,14 @@ class RoutingRetrievalPipeline(Searcher):
         self, query: Query, ctx: RetrievalContext, trace: SearchTrace | None = None
     ) -> list[RetrievalResult]:
         self.ensure_built()
-        if not query.query_type:  # a caller-supplied query_type wins; otherwise classify
+        supplied = bool(query.query_type)  # a caller-supplied query_type wins; otherwise classify
+        query = replace(query, annotations=list(query.annotations))  # classify a copy, never the caller's
+        if not supplied:
             self._classifier.classify(query, ctx)
         searcher = self._routes.get(query.query_type, self._default)
         if trace is not None:  # record which route this query took before delegating to it
             route_key = query.query_type if query.query_type in self._routes else "default"
             trace.routing = (query.query_type, route_key)
+        if not supplied and isinstance(searcher, RoutingRetrievalPipeline):
+            query = replace(query, query_type="")  # a nested router classifies by its own taxonomy
         return await searcher.search(query, ctx, trace)

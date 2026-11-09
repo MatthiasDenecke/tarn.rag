@@ -78,7 +78,7 @@ class RetrievalPipeline(Searcher):
         if trace is not None:
             trace.record_stage("fused", results)
         if self._merger is not None:
-            results = await self._merger.merge(results, ctx)
+            results = await self._merger.merge(query, results, ctx)
             if trace is not None:
                 trace.record_stage("merged", results)
         if self._reranker is not None:
