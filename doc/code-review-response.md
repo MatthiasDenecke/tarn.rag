@@ -20,7 +20,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 | #136 | WP-4a: HIGH-06, HIGH-08 |
 | #137 | WP-4b: HIGH-07, MED-03, MED-04 |
 | #138 | WP-5: MED-05, MED-06, MED-07 (LOW-02 rejected) |
-| WP-6 | MED-09, LOW-01, LOW-05, and this page |
+| #139 | WP-6: MED-09, LOW-01, LOW-05, and this page |
 
 ## Verdicts
 
