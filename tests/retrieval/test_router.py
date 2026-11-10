@@ -102,6 +102,28 @@ async def test_a_nested_router_runs_its_own_classifier():
     assert [a.value["label"] for a in leaf.seen.annotations] == ["table", "numeric"]  # both recorded
 
 
+async def test_the_trace_records_every_routing_hop():
+    """``explain`` shows the whole route path through nested routers, not just the last decision."""
+    from tarnrag.retrieval.types import SearchTrace
+
+    leaf = _RecordingSearcher("INNER-LEAF")
+    inner = _router(_LabelClassifier("numeric"), {"numeric": leaf}, _RecordingSearcher("INNER-DEFAULT"))
+    outer = _router(_LabelClassifier("table"), {"table": inner}, _RecordingSearcher("OUTER-DEFAULT"))
+    trace = SearchTrace(query=Query(text="q"))
+    await outer.search(trace.query, None, trace)
+    assert trace.route_path == [("table", "table"), ("numeric", "numeric")]
+    assert trace.routing == ("numeric", "numeric")  # the hop whose pipeline actually ran
+
+
+async def test_nesting_the_same_classifier_does_not_duplicate_its_annotation():
+    leaf = _RecordingSearcher("LEAF")
+    structural = StructuralQueryClassifier(StructuralQueryClassifier.Config())
+    inner = _router(structural, {"lexical": leaf}, _RecordingSearcher("INNER-DEFAULT"))
+    outer = _router(StructuralQueryClassifier(StructuralQueryClassifier.Config()), {"lexical": inner}, _RecordingSearcher("D"))
+    await outer.search(Query(text="torque spec 6.4.2"), None)
+    assert len(leaf.seen.annotations) == 1  # classified twice, recorded once
+
+
 async def test_a_supplied_query_type_passes_through_nested_routers():
     """A caller-pinned query_type is the caller's routing decision — honored at every level."""
     leaf = _RecordingSearcher("INNER-LEAF")
