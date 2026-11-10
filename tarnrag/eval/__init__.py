@@ -58,13 +58,10 @@ __all__ = [
     "HF_LOADERS",
     "LOADERS",
     "MOTHRAG_PUBLISHED",
-    # MOTHRAG benchmark harness
     "BenchItem",
-    # retrieval eval
     "EvalQuery",
     "EvalReport",
     "EvalSet",
-    # generation eval
     "GenEvalQuery",
     "GenEvalReport",
     "GenEvalSet",
