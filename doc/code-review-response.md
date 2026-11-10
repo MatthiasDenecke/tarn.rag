@@ -67,12 +67,14 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
   an ancestor" check compared `source_element_ids`, which are never persisted, so it never fired on
   real data. It now compares persisted char spans. An end-to-end test over really ingested chunks
   catches it (#132).
-- **Not fixed: distributed retries.** The distributed how-to and the code comments say a job whose
-  handler raises is requeued. With pgQueuer's default executor it isn't: the job is logged as
-  `exception` and deleted (`on_failure="delete"`). Only a crashed worker's job comes back, once its
-  heartbeat goes stale. The status correctly shows `failed`, but nothing retries it. Making it retry
-  needs a policy decision (for example pgQueuer's `DatabaseRetryEntrypointExecutor` with a maximum
-  attempt count and backoff), so it's left for a follow-up.
+- **Distributed retries (fixed in a follow-up PR).** The distributed how-to and the code comments
+  said a job whose handler raises is requeued. With pgQueuer's default executor it wasn't: the job was
+  logged as `exception` and deleted (`on_failure="delete"`). Only a crashed worker's job came back,
+  once its heartbeat went stale. The chosen policy is that a failed job is retried. The adapter now
+  registers pgQueuer's `DatabaseRetryEntrypointExecutor` with exponential backoff, up to
+  `WORKER__MAX_ATTEMPTS` runs, and *holds* a job that exhausts them as a dead letter instead of
+  deleting it. A retried failure records the job as `queued`, so the document reads `in_progress`;
+  only the last attempt records `failed`.
 
 ## How the fixes were checked
 

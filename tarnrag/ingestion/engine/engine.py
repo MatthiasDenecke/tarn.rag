@@ -138,14 +138,18 @@ class IngestionEngine(Engine):
                 stage.bind_embedder(embedder)
 
         if settings.MODE == "distributed":
+            worker = settings.worker
             queue: JobEnqueuer = await PgQueuerJobQueue.connect(
                 settings.database.queue_url,
-                concurrency=settings.worker.concurrency,
-                dequeue_timeout_seconds=settings.worker.queue_timeout_seconds,
+                concurrency=worker.concurrency,
+                dequeue_timeout_seconds=worker.queue_timeout_seconds,
+                max_attempts=worker.max_attempts,
+                retry_delay_seconds=worker.retry_delay_seconds,
+                retry_max_delay_seconds=worker.retry_max_delay_seconds,
             )
             auto_drain = False
         else:  # embedded — run the whole pipeline in this process
-            queue = InMemoryJobQueue()
+            queue = InMemoryJobQueue(max_attempts=settings.worker.max_attempts)
             auto_drain = True
 
         orchestrator = PipelineOrchestrator(

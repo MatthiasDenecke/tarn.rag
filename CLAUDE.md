@@ -105,7 +105,11 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
 - **Queue ports.** Two role-segregated ABCs: **`JobEnqueuer`** (`enqueue`, the producer, used by the
   orchestrator) and **`JobConsumer`** (`set_handler` / `run`, the consumer runtime). The worker is a
   registered handler, not a puller. **`PgQueuerJobQueue`** is the only file that imports pgQueuer
-  (which owns SKIP LOCKED / retries / NOTIFY / dead-lettering); **`InMemoryJobQueue`** is the
+  (which owns SKIP LOCKED / retries / NOTIFY / dead-lettering — the adapter registers pgQueuer's
+  `DatabaseRetryEntrypointExecutor` with `on_failure="hold"`; its default executor would *delete* a
+  failed job). Both queues retry a failed job up to `WORKER__MAX_ATTEMPTS` runs and hand the worker a
+  `Batch` whose `final_attempt` tells the status projection a retried failure (`queued`) from a
+  terminal one (`failed`); **`InMemoryJobQueue`** is the
   production embedded-mode queue (and the test double — no Postgres). The consumer hands the worker
   a **`Batch`** (`ingestion/engine/jobs.py`) — homogeneous (all jobs share one `stage_name`, enforced
   by the constructor); the InMemory queue groups each wave into real multi-job batches, the pgQueuer

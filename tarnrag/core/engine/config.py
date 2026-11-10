@@ -151,11 +151,19 @@ class DatabaseSettings(BaseModel):
 
 class WorkerSettings(BaseModel):
     """
-    Distributed-mode worker tuning, applied to the pgQueuer consumer loop (``PgQueuerJobQueue.run``).
+    Worker tuning: the pgQueuer consumer loop (``PgQueuerJobQueue.run``) and the retry policy both job
+    queues apply.
     """
 
     queue_timeout_seconds: int = Field(default=30, gt=0)  # how long the loop waits for work before re-polling
     concurrency: int = Field(default=4, ge=1)  # batches one worker process runs at once
+    # Retry policy for a job whose stage (or its persistence) fails: up to ``max_attempts`` runs in total,
+    # then dead-lettered (status ``failed``). Applies to both queues; the backoff only to distributed
+    # mode (pgQueuer re-queues with ``retry_delay_seconds`` doubling per attempt, capped at
+    # ``retry_max_delay_seconds``) — embedded mode retries within the same in-process drain.
+    max_attempts: int = Field(default=3, ge=1)
+    retry_delay_seconds: float = Field(default=1.0, gt=0)
+    retry_max_delay_seconds: float = Field(default=300.0, gt=0)
 
 
 class ObservabilitySettings(BaseModel):

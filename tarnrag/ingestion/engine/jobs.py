@@ -40,11 +40,15 @@ class Batch:
     stays on each ``IngestionJob`` (the queue routes by it); ``Batch`` derives the batch's
     stage from its jobs and refuses a mismatch. Forming Batches is the queue's job — when
     batch dispatch claims several jobs, it must group them so each Batch is homogeneous.
+
+    ``final_attempt`` is the queue's word on retries: ``False`` when a failure of this batch will be
+    retried (the queue still has attempts left for it), ``True`` when this is the last try — so the
+    status projection can tell a transient failure (the job is queued again) from a terminal one.
     """
 
-    __slots__ = ("jobs", "stage_name")
+    __slots__ = ("final_attempt", "jobs", "stage_name")
 
-    def __init__(self, jobs: list[IngestionJob]):
+    def __init__(self, jobs: list[IngestionJob], *, final_attempt: bool = True):
         """
         Build a batch from same-stage jobs, enforcing the homogeneity invariant (raises on an
         empty list or a mix of ``stage_name``s).
@@ -58,3 +62,4 @@ class Batch:
             )
         self.jobs = jobs
         self.stage_name = jobs[0].stage_name
+        self.final_attempt = final_attempt

@@ -47,9 +47,18 @@ Worker tuning lives under `WORKER__*`: `WORKER__CONCURRENCY` (default 4) is how 
 worker process runs at once, and `WORKER__QUEUE_TIMEOUT_SECONDS` (default 30) how long an idle worker
 waits before re-polling. Stage compute (parsing, embedding) runs in threads, so a busy worker still
 answers the queue's heartbeats. pgQueuer owns the queue mechanics — SKIP LOCKED
-dispatch, retries, NOTIFY wake-ups, dead-lettering. A worker that fails a batch re-raises, and the
-queue requeues the job; downstream jobs are only enqueued after upstream results are persisted, so
-a crash never loses or duplicates work (re-ingesting is idempotent by document id).
+dispatch, retries, NOTIFY wake-ups, dead-lettering.
+
+**Failures are retried.** A job whose stage (or its persistence) fails goes back on the queue with an
+exponential backoff — `WORKER__RETRY_DELAY_SECONDS` (default 1 s), doubling per attempt, capped at
+`WORKER__RETRY_MAX_DELAY_SECONDS` (default 300 s) — until it has run `WORKER__MAX_ATTEMPTS` times
+(default 3). While a retry is pending the document's status is `in_progress`; only the last failed
+attempt marks it `failed`. A job that exhausts its attempts is **kept** in pgQueuer's queue table with
+status `failed` — the dead letter — so it can be inspected and re-queued (pgQueuer's
+`Queries.list_failed_jobs` / `Queries.requeue_jobs`) once the cause is fixed. A worker that *crashes*
+mid-job is recovered separately: its heartbeat goes stale and another worker picks the job up.
+Downstream jobs are only enqueued after upstream results are persisted, and every write is idempotent,
+so a retry never duplicates work.
 
 ## Notes
 

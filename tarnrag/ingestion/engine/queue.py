@@ -5,6 +5,10 @@ puts jobs on the queue) and ``JobConsumer`` (the runtime — register a handler 
 the dispatch loop, which belongs to the queue technology). One adapter implements both:
 ``PgQueuerJobQueue`` (the only place that touches pgQueuer, lazily imported) and
 ``InMemoryJobQueue`` (a test double that runs the whole flow with no Postgres/pgQueuer).
+
+Both retry a failed job — a handler that raises — up to ``max_attempts`` tries in total
+(``WORKER__MAX_ATTEMPTS``), then dead-letter it; each ``Batch`` they hand out says whether it is the
+job's ``final_attempt``, so the status projection reads a retried failure as still in progress.
 """
 
 from __future__ import annotations
@@ -61,6 +65,8 @@ class InMemoryJobQueue(JobEnqueuer, JobConsumer):
     """
 
     def __init__(self, requeue_on_error: bool = True, max_attempts: int = 3, max_batch_size: int = 256):
+        if max_attempts < 1:
+            raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
         self._jobs: asyncio.Queue[tuple[IngestionJob, int]] = asyncio.Queue()
         self._handler: JobHandler | None = None
         self.requeue_on_error = requeue_on_error
@@ -96,8 +102,11 @@ class InMemoryJobQueue(JobEnqueuer, JobConsumer):
         """Dispatch one homogeneous batch. On failure with requeue, **isolate**: re-run each job solo so a
         single bad job doesn't penalize the rest — preserving the per-job at-least-once / dead-letter
         semantics (a solo failure requeues that job or, past ``max_attempts``, dead-letters it)."""
+        # A failure is final only for a lone job on its last attempt; a failed multi-job batch is re-run
+        # job by job (isolation) before any job's attempt count moves.
+        final = not self.requeue_on_error or (len(batch) == 1 and batch[0][1] + 1 >= self.max_attempts)
         try:
-            await self._handler(Batch([job for job, _ in batch]))
+            await self._handler(Batch([job for job, _ in batch], final_attempt=final))
         except Exception:
             if not self.requeue_on_error:
                 raise
@@ -115,8 +124,14 @@ class InMemoryJobQueue(JobEnqueuer, JobConsumer):
 class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
     """
     Queue backed by pgQueuer — the only adapter that imports pgQueuer (lazily).
-    pgQueuer owns claiming/retries/NOTIFY/dead-lettering; a handler that raises
-    propagates so pgQueuer requeues the job (= recovery, D5).
+    pgQueuer owns claiming/retries/NOTIFY/dead-lettering. A handler that raises is retried by
+    pgQueuer itself (``DatabaseRetryEntrypointExecutor``: the job goes back to ``queued`` with an
+    exponential backoff — ``retry_delay_seconds`` doubling per attempt, capped at
+    ``retry_max_delay_seconds``) until it has run ``max_attempts`` times; then it is **held**
+    (``on_failure="hold"``: status ``failed`` in pgQueuer's queue table — the dead letter, listed by
+    ``Queries.list_failed_jobs`` and re-queueable with ``Queries.requeue_jobs``), not deleted. (pgQueuer's
+    default executor deletes a job whose handler raises, with no retry.) A worker that dies mid-job is
+    recovered separately: its heartbeat goes stale and another worker re-claims the job.
 
     ``concurrency`` caps the batches this worker process runs at once, and ``dequeue_timeout_seconds`` is
     how long the loop waits for work before re-polling — ``settings.worker`` (``WORKER__CONCURRENCY`` /
@@ -127,7 +142,17 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
     (pgQueuer's entrypoint ``concurrency_limit`` is a different thing: global, across all workers.)
     """
 
-    def __init__(self, driver, pool=None, *, concurrency: int = 4, dequeue_timeout_seconds: float = 30):
+    def __init__(
+        self,
+        driver,
+        pool=None,
+        *,
+        concurrency: int = 4,
+        dequeue_timeout_seconds: float = 30,
+        max_attempts: int = 3,
+        retry_delay_seconds: float = 1.0,
+        retry_max_delay_seconds: float = 300.0,
+    ):
         from pgqueuer import QueueManager
         from pgqueuer.queries import Queries
 
@@ -138,25 +163,26 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
         self._pool = pool  # the asyncpg pool connect() opened (None when a driver is injected)
         if concurrency < 1:
             raise ValueError(f"worker concurrency must be >= 1, got {concurrency}")
+        if max_attempts < 1:
+            raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
         self.concurrency = concurrency
         self.dequeue_timeout = timedelta(seconds=dequeue_timeout_seconds)
+        self.max_attempts = max_attempts
+        self.retry_delay = timedelta(seconds=retry_delay_seconds)
+        self.retry_max_delay = timedelta(seconds=retry_max_delay_seconds)
         self._slots = asyncio.Semaphore(concurrency)  # in-flight handler executions in this worker
 
     @classmethod
-    async def connect(
-        cls, connection_url: str, *, concurrency: int = 4, dequeue_timeout_seconds: float = 30
-    ) -> PgQueuerJobQueue:
+    async def connect(cls, connection_url: str, **options: float) -> PgQueuerJobQueue:
         """
-        Create an asyncpg pool for ``connection_url`` and wrap it in a pgQueuer driver.
+        Create an asyncpg pool for ``connection_url`` and wrap it in a pgQueuer driver; ``options`` are
+        the constructor's tuning keywords (concurrency, timeouts, the retry policy).
         """
         import asyncpg
         from pgqueuer.db import AsyncpgPoolDriver
 
         pool = await asyncpg.create_pool(connection_url)
-        return cls(
-            AsyncpgPoolDriver(pool), pool=pool,
-            concurrency=concurrency, dequeue_timeout_seconds=dequeue_timeout_seconds,
-        )
+        return cls(AsyncpgPoolDriver(pool), pool=pool, **options)
 
     async def aclose(self) -> None:
         """Release the asyncpg pool :meth:`connect` opened. Idempotent; a driver-injected instance owns
@@ -171,15 +197,27 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
 
     def set_handler(self, handler: JobHandler) -> None:
         """
-        Register ``handler`` as the pgQueuer entrypoint; each claimed job is decoded into a
-        single-job ``Batch`` and handed over.
+        Register ``handler`` as the pgQueuer entrypoint — with the retrying executor and the hold-on-
+        terminal-failure policy (see the class docstring); each claimed job is decoded into a
+        single-job ``Batch`` that knows whether this run is the job's last attempt.
         """
+        from pgqueuer.executors import DatabaseRetryEntrypointExecutor
         from pgqueuer.models import Job
 
-        @self._qm.entrypoint(ENTRYPOINT)
+        def retrying(parameters):
+            return DatabaseRetryEntrypointExecutor(
+                parameters,
+                max_attempts=self.max_attempts - 1,  # pgQueuer counts RE-tries: total runs = this + 1
+                initial_delay=self.retry_delay,
+                max_delay=self.retry_max_delay,
+            )
+
+        @self._qm.entrypoint(ENTRYPOINT, executor_factory=retrying, on_failure="hold")
         async def _run(pg_job: Job) -> None:
+            job = IngestionJob.model_validate_json(pg_job.payload)
+            final = pg_job.attempts + 1 >= self.max_attempts  # pgQueuer's attempts = prior failed runs
             async with self._slots:
-                await handler(Batch([IngestionJob.model_validate_json(pg_job.payload)]))
+                await handler(Batch([job], final_attempt=final))
 
     async def run(self) -> None:
         batch_size = max(1, self.concurrency // 2)
