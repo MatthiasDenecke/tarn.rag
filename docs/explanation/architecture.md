@@ -125,9 +125,11 @@ grounding checkers — all are config-driven Components composed by spec under `
 (the [catalog](../reference/components.md) lists them). Comparing methods — hybrid vs. dense-only,
 single-hop vs. decomposition — is a config edit, not a code change. Generation is an opt-in layer:
 retrieval works LLM-free, and license/scope filtering is enforced as a SQL pre-filter inside the
-retrievers. Generation always retrieves under the `GENERATION_GROUNDING` purpose, whatever the
-caller's query says, so a chunk ingested with `ai_grounding_allowed = false` can be retrieved but
-never grounds an answer; anything the auto-merger brings in passes the same filter.
+retrievers. Generation marks everything it retrieves as grounding an answer: on top of the caller's
+own purpose, never instead of it. A chunk ingested with `ai_grounding_allowed = false` can be
+retrieved but never grounds an answer, and generation's license classes are the purpose's
+intersected with `GENERATION_GROUNDING`'s — narrower, never wider. Anything the auto-merger brings
+in passes the same filter.
 
 ## Where the deep detail lives
 
