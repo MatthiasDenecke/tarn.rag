@@ -23,12 +23,12 @@ from __future__ import annotations
 import re
 from abc import abstractmethod
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
+from bausatz import Component, ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import Component, ComponentFactory
 from tarnrag.core.resources.llm import Prompt
 from tarnrag.generation.components._parsing import extract_json
 from tarnrag.generation.components._passages import passage_text
@@ -69,9 +69,13 @@ class GroundingChecker(Component):
 
 # A compact stop set for the overlap heuristic (content words only — small + self-contained).
 _STOPWORDS = frozenset(
-    "a an the of to in on for and or but with at by from as into about than that this these those is are "
-    "was were be been being it its do does did can could should would will may might has have had not no "
-    "you your we our they their he she his her i".split()
+    [
+        "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "but", "with", "at", "by",
+        "from", "as", "into", "about", "than", "that", "this", "these", "those", "is", "are", "was",
+        "were", "be", "been", "being", "it", "its", "do", "does", "did", "can", "could", "should",
+        "would", "will", "may", "might", "has", "have", "had", "not", "no", "you", "your", "we",
+        "our", "they", "their", "he", "she", "his", "her", "i"
+    ]
 )
 _TOKEN = re.compile(r"\w+")
 
@@ -171,7 +175,7 @@ class CascadingGroundingChecker(GroundingChecker):
 
     class Config(GroundingChecker.Config):
         class_name: Literal["cascading_grounding"] = "cascading_grounding"
-        checkers: list[dict[str, Any]] = Field(default_factory=list)  # child checkers, cheap → expensive
+        checkers: list[GroundingChecker.Config] = Field(default_factory=list)  # child checkers, cheap → expensive
 
     config: CascadingGroundingChecker.Config
 
@@ -180,10 +184,10 @@ class CascadingGroundingChecker(GroundingChecker):
         self._checkers: list[GroundingChecker] = []
 
     def _build_children(self, factory: ComponentFactory) -> None:
-        self._checkers = [factory.create_as(spec, GroundingChecker) for spec in self.config.checkers]
+        self._checkers = [factory.build_as(cfg, GroundingChecker) for cfg in self.config.checkers]
 
     async def check(self, reasoned: ReasonedAnswer, ctx: GenerationContext) -> list[Verdict]:
-        self._ensure_children()
+        self.ensure_built()
         verdicts: list[Verdict] = [Verdict.UNCERTAIN] * len(reasoned.steps)
         for checker in self._checkers:
             pending = [i for i, v in enumerate(verdicts) if v is Verdict.UNCERTAIN]

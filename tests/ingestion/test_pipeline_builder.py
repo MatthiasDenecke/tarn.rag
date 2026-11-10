@@ -4,17 +4,18 @@
 from typing import Literal
 
 import pytest
-
 from bausatz import Component
 from bausatz.registry import UnknownTagError
+from pydantic import ValidationError
+
 from tarnrag.core.engine.config import (
     INGESTION_PIPELINE,
     EmbeddingSettings,
     Settings,
 )
 from tarnrag.ingestion import IngestionEngine
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.pipeline.embed import EmbedStage
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
 
 
 def _settings(**kwargs) -> Settings:
@@ -86,8 +87,18 @@ def test_from_spec_rejects_a_non_pipeline_top_level_spec():
 
 
 def test_from_spec_rejects_a_non_stage_child():
-    with pytest.raises(TypeError, match="not a PipelineStage"):
+    # Stages are typed children (``list[PipelineStage.Config]``): a non-stage child is rejected while the
+    # pipeline spec is validated, before any stage is built.
+    with pytest.raises(ValidationError, match="stages.0"):
         Pipeline.from_spec({"class_name": "pipeline", "stages": [{"class_name": "_not_a_stage"}]})
+
+
+def test_from_spec_rejects_a_malformed_grandchild_before_building():
+    # bausatz validates the whole tree in one pass: an unknown option on the chunker (a stage's child)
+    # fails at spec validation, at its full path — not later, on the first document.
+    spec = {"class_name": "pipeline", "stages": [{"class_name": "Chunk", "chunker": {"class_name": "recursive", "nope": 1}}]}
+    with pytest.raises(ValidationError, match=r"stages\.0\.chunker\.nope"):
+        Pipeline.from_spec(spec)
 
 
 def test_from_spec_rejects_an_unknown_stage_tag():

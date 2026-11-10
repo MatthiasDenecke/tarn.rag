@@ -15,14 +15,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from typing import Any, Literal
-
-from pydantic import Field
+from typing import Literal
 
 from bausatz import ComponentFactory
+from pydantic import Field
+
 from tarnrag.core.text import looks_like_identifier, quoted_spans
 from tarnrag.generation.components._passages import passage_text
-from tarnrag.generation.components.reasoner import ReasonedAnswer, Reasoner
+from tarnrag.generation.components.reasoner import (
+    ReasonedAnswer,
+    Reasoner,
+    SingleHopReasoner,
+)
 from tarnrag.generation.context import GenerationContext
 from tarnrag.retrieval.types import Query
 
@@ -32,7 +36,7 @@ class AnswerabilityGateReasoner(Reasoner):
 
     class Config(Reasoner.Config):
         class_name: Literal["answerability"] = "answerability"
-        reasoner: dict[str, Any] = Field(default_factory=lambda: {"class_name": "single_hop"})
+        reasoner: Reasoner.Config = Field(default_factory=SingleHopReasoner.Config)
         top_k: int = 8  # the gate's evidence probe
         refusal: str = (
             "The available evidence does not mention {missing}, so I can't answer that reliably."
@@ -45,10 +49,10 @@ class AnswerabilityGateReasoner(Reasoner):
         self._child: Reasoner | None = None
 
     def _build_children(self, factory: ComponentFactory) -> None:
-        self._child = factory.create_as(self.config.reasoner, Reasoner)
+        self._child = factory.build_as(self.config.reasoner, Reasoner)
 
     async def reason(self, query: Query, ctx: GenerationContext) -> ReasonedAnswer:
-        self._ensure_children()
+        self.ensure_built()
         cues = self._cues(query.text)
         if not cues:
             return await self._child.reason(query, ctx)  # nothing checkable — pass through

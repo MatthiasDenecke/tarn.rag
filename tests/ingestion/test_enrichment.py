@@ -3,6 +3,10 @@ custom enricher registers and runs by config, annotating at document- and elemen
 
 from typing import Literal
 
+import pytest
+from bausatz import ComponentFactory
+from pydantic import ValidationError
+
 from tarnrag.contracts import (
     Element,
     ElementKind,
@@ -10,7 +14,6 @@ from tarnrag.contracts import (
     Span,
     StructuredDocument,
 )
-from bausatz import ComponentFactory
 from tarnrag.ingestion.components.enrichment.acronyms import AcronymEnricher
 from tarnrag.ingestion.components.enrichment.enrich import EnrichStage
 from tarnrag.ingestion.components.enrichment.enricher import Enricher
@@ -50,12 +53,10 @@ def test_enrich_stage_with_no_enrichers_is_a_passthrough():
 
 
 def test_enrich_stage_rejects_a_non_enricher_spec():
-    stage = EnrichStage(EnrichStage.Config(enrichers=[{"class_name": "Chunk"}]))  # a stage, not an Enricher
-    try:
-        list(stage.process(PipelineItem(content="x", metadata={}, document=_single("x"))))
-        raise AssertionError("expected a TypeError")
-    except TypeError as e:
-        assert "not a" in str(e) and "Enricher" in str(e)
+    # Children are typed (``list[Enricher.Config]``), so a foreign child — a stage, not an Enricher — is
+    # rejected when the config is validated, before anything is built or run.
+    with pytest.raises(ValidationError, match="enrichers"):
+        EnrichStage.Config(enrichers=[{"class_name": "Chunk"}])
 
 
 # --- AC-2: a custom enricher runs purely by config, at both levels, without editing any base class ---

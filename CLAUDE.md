@@ -30,7 +30,10 @@ GenerationEngine.create() → await answer → reason (retrieve↔read) → grou
 Design specs: `doc/FUNCTIONAL_REQUIREMENTS.md` (ingestion), `doc/ModusQ_RetrievalSubsystemSpec.md` +
 `doc/retrieval-architecture-design.md` (retrieval), and `doc/generation-architecture-design.md` (generation).
 Retrieval methods, generation steps, extractors, chunkers, and enrichers are all config-driven **Components**
-(the standalone [`bausatz`](https://pypi.org/project/bausatz/) package — `Component` + `ComponentFactory` + `Registry`, imported directly) composed by spec under `Settings.components`.
+(the standalone [`bausatz`](https://pypi.org/project/bausatz/) package, `>=0.3` — `Component` + `ComponentFactory` + `Registry`, imported directly) composed by spec under `Settings.components`.
+Container children are **typed Configs** (`list[Retriever.Config]`, `Chunker.Config`, …): a spec tree validates in one
+pass, and `_build_children` turns each child Config into a component with `factory.build_as(cfg, Family)`; a
+directly-constructed container calls `self.ensure_built()` before first use.
 
 ## Using the engines
 

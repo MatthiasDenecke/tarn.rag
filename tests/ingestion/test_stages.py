@@ -1,15 +1,15 @@
 import pytest
+from bausatz import ComponentFactory
 from pydantic import ValidationError
 
 from tarnrag.contracts import ChunkProvenance, PipelineItem
-from bausatz import ComponentFactory
 from tarnrag.core.engine.config import EmbeddingSettings
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.components.chunking.chunk import ChunkStage
-from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
-from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.ingestion.components.enrichment.enrich import EnrichStage
 from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
+from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
+from tarnrag.ingestion.pipeline.embed import EmbedStage
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
 
 
 def _item(content, **meta):
@@ -55,7 +55,9 @@ def test_chunk_splits_and_indexes():
 
 def test_chunk_validation():
     # The size/overlap validation lives on the recursive chunker's Config (pydantic).
-    from tarnrag.ingestion.components.chunking.recursive import RecursiveCharacterChunker
+    from tarnrag.ingestion.components.chunking.recursive import (
+        RecursiveCharacterChunker,
+    )
 
     with pytest.raises(ValidationError):
         RecursiveCharacterChunker.Config(chunk_size=0)
@@ -153,7 +155,7 @@ def test_stage_built_from_dict_spec_via_component_factory():
     assert (chunk._chunker.config.chunk_size, chunk._chunker.config.overlap) == (16, 4)  # child built by the factory
     assert chunk.tag == "Chunk"  # the type tag (the sink/metrics key)
     assert chunk.name == "Chunk"  # unnamed ⇒ the bare tag; PipelineDAG adds the positional suffix
-    assert chunk.to_json()["class_name"] == "Chunk"  # round-trips back to a spec
+    assert chunk.to_dict()["class_name"] == "Chunk"  # round-trips back to a spec
 
 
 def test_pipeline_composition_doc_to_chunks():

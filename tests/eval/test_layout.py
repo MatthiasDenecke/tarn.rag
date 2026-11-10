@@ -59,7 +59,7 @@ def test_load_tatqa_filters_arithmetic_and_labels_sources():
 
 
 def test_load_tatqa_limit_caps_records():
-    corpus, queries = load_tatqa(ROWS + ROWS, limit=1)
+    corpus, _ = load_tatqa(ROWS + ROWS, limit=1)
     assert {uid for uid, _, _ in corpus} == {"t1", "p1", "p2"}  # only the first record
 
 

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from tarnrag.contracts import RetrievalResult
 from bausatz import Component
+
+from tarnrag.contracts import RetrievalResult
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.types import Query, SearchTrace
 

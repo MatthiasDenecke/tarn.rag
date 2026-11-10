@@ -1,6 +1,7 @@
 """The RoutingRetrievalPipeline: classify a query, then dispatch to the matching sub-pipeline."""
 
 from bausatz import ComponentFactory
+
 from tarnrag.retrieval import (
     GenericQueryClassifier,
     Query,
@@ -91,5 +92,5 @@ def test_factory_builds_a_router_as_a_searcher():
 def test_default_router_is_just_the_default_pipeline():
     # All defaults (generic classifier, no routes, dense default): builds, and behaves as a single pipeline.
     router = ComponentFactory.get().create_as({"class_name": "routing_retrieval_pipeline"}, Searcher)
-    router._ensure_children()
+    router.ensure_built()
     assert router._routes == {} and isinstance(router._default, RetrievalPipeline)

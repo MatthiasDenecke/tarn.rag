@@ -296,7 +296,8 @@ class Settings(BaseSettings):
             )
         if not isinstance(data, dict):
             kind = "empty" if data is None else type(data).__name__
-            raise ValueError(f"config {path} must be a mapping of settings, got {kind}")
+            # A bad *value* (the file's content), not a bad argument type — callers handle ValueError.
+            raise ValueError(f"config {path} must be a mapping of settings, got {kind}")  # noqa: TRY004
         return cls(_env_file=None, **data)
 
 

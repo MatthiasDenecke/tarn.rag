@@ -12,8 +12,9 @@ from abc import abstractmethod
 from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
-from tarnrag.contracts import PipelineItem
 from bausatz import Component, ComponentFactory
+
+from tarnrag.contracts import PipelineItem
 
 
 class PipelineStage(Component):
@@ -104,8 +105,10 @@ class FilterStage(PipelineStage):
 
 class Pipeline(Component):
     """
-    An ordered list of stages — a container ``Component``. Its ``Config`` lists raw stage specs and
-    ``_build_children`` instantiates them via the factory, so a whole pipeline is itself a spec:
+    An ordered list of stages — a container ``Component``. Its ``Config`` lists the stage configs (typed
+    ``PipelineStage.Config`` children, so a malformed stage spec — or a stage's malformed child — fails
+    when the pipeline spec is validated, not later at build time) and ``_build_children`` builds them
+    through the factory, so a whole pipeline is itself a spec:
     ``{"class_name": "pipeline", "stages": [{"class_name": "Chunk", ...}, ...]}``. The
     DAG/orchestrator read ``.stages``; ``run`` threads items through in-process (local testing — the
     distributed engine runs stages individually via the worker). Two alternative constructors:
@@ -115,7 +118,7 @@ class Pipeline(Component):
 
     class Config(Component.Config):
         class_name: Literal["pipeline"] = "pipeline"
-        stages: list[dict[str, Any]]
+        stages: list[PipelineStage.Config]
 
     config: Pipeline.Config  # narrowed for type checkers (see Component)
 
@@ -124,9 +127,9 @@ class Pipeline(Component):
         self.stages: list[PipelineStage] = []
 
     def _build_children(self, factory: ComponentFactory) -> None:
-        """Instantiate the stage specs via the SAME factory, asserting each is a PipelineStage
-        (``create_as`` does the build + type check)."""
-        stages = [factory.create_as(spec, PipelineStage) for spec in self.config.stages]
+        """Build the (already-validated) stage configs via the SAME factory, asserting each is a
+        PipelineStage (``build_as`` does the build + type check)."""
+        stages = [factory.build_as(cfg, PipelineStage) for cfg in self.config.stages]
         if not stages:
             raise ValueError("Pipeline must have at least one stage")
         self.stages = stages

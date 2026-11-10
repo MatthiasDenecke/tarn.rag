@@ -34,11 +34,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from examples.common import base_settings, example_db, require_model
 from tarnrag import TarnRag
 from tarnrag.eval import EvalReport, EvalSet, format_reports, format_segmented, sweep
 from tarnrag.retrieval import Query, StructuralQueryClassifier
-
-from examples.common import base_settings, example_db, require_model
 
 EVALSET = Path(__file__).resolve().parent / "evalset.json"
 
