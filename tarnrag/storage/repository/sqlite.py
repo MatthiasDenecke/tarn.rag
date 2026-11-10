@@ -29,7 +29,13 @@ from sqlalchemy import Table, Text, event
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from tarnrag.contracts import Candidate, Chunk, ChunkFilter, Embedding, is_retrieval_unit
+from tarnrag.contracts import (
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    Embedding,
+    is_retrieval_unit,
+)
 from tarnrag.core.text import lexical_query
 from tarnrag.storage.repository.base import DocumentRepository
 

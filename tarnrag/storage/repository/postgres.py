@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 from sqlalchemy import Table, and_, false, func, or_, select, true
-from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
 
