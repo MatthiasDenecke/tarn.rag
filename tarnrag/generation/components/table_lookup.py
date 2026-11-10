@@ -29,9 +29,8 @@ import re
 from dataclasses import replace
 from typing import Literal
 
-from pydantic import Field
-
 from bausatz import ComponentFactory
+from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult, Table
 from tarnrag.generation.components.reasoner import (

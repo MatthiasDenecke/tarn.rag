@@ -12,10 +12,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import PipelineItem
-from bausatz import ComponentFactory
 from tarnrag.ingestion.components.enrichment.enricher import Enricher
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 

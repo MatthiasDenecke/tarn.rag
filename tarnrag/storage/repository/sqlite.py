@@ -28,7 +28,14 @@ from sqlalchemy import Table, Text, event
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from tarnrag.contracts import Candidate, Chunk, ChunkFilter, ChunkRecord, Embedding, is_retrieval_unit
+from tarnrag.contracts import (
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    ChunkRecord,
+    Embedding,
+    is_retrieval_unit,
+)
 from tarnrag.core.text import looks_like_identifier, quoted_spans
 from tarnrag.storage.repository.base import DocumentRepository
 
@@ -45,7 +52,7 @@ class SqliteRepository(DocumentRepository):
         super().__init__(connection_url, embedding_dimension)
 
         @event.listens_for(self.engine.sync_engine, "connect")
-        def _on_connect(dbapi_connection, _record):  # noqa: ANN001
+        def _on_connect(dbapi_connection, _record):
             # SQLite enforces foreign keys / ON DELETE CASCADE only when
             # ``PRAGMA foreign_keys=ON``, which is per-connection.
             cursor = dbapi_connection.cursor()
@@ -57,7 +64,7 @@ class SqliteRepository(DocumentRepository):
             self._load_sqlite_vec(dbapi_connection)
 
     @staticmethod
-    def _load_sqlite_vec(dbapi_connection) -> None:  # noqa: ANN001
+    def _load_sqlite_vec(dbapi_connection) -> None:
         """
         Load the sqlite-vec extension onto a freshly-opened connection (called from the
         per-connection ``connect`` event), so vec0 dense-KNN is available on every connection.

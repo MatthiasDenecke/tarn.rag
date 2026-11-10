@@ -10,10 +10,9 @@ from sqlalchemy import Table, and_, false, func, or_, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
-from pgvector.sqlalchemy import Vector
 
-from tarnrag.storage.repository.base import DocumentRepository
 from tarnrag.contracts import Candidate, ChunkFilter, ChunkRecord
+from tarnrag.storage.repository.base import DocumentRepository
 
 
 class PostgresRepository(DocumentRepository):
