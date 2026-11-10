@@ -17,7 +17,6 @@ from tarnrag.contracts import (
     TableCell,
 )
 
-
 # ---- geometry: offsets universal, boxes additive ----
 
 def test_span_offsets_are_universal_boxes_optional():

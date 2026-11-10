@@ -1,10 +1,9 @@
 import pytest
 
-from tarnrag.core.exceptions import IngestionError
 from tarnrag.contracts import PipelineItem
+from tarnrag.core.exceptions import IngestionError
 from tarnrag.ingestion.engine.jobs import Batch
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.pipeline import MapperStage
 from tarnrag.ingestion.engine.queue import JobEnqueuer
 from tarnrag.ingestion.engine.result_sink import (
     FinalizationOutcome,
@@ -12,6 +11,7 @@ from tarnrag.ingestion.engine.result_sink import (
     ResultSink,
     create_sink_registry,
 )
+from tarnrag.ingestion.pipeline.pipeline import MapperStage
 
 
 class RecordingEnqueuer(JobEnqueuer):

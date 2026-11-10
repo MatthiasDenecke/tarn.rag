@@ -16,7 +16,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from tarnrag.core.engine.config import ObservabilitySettings
@@ -84,7 +84,7 @@ class StructuredLoggingObservability(Observability):
     in production, zero new dependencies. Enable with ``OBSERVABILITY__ENABLED=true
     OBSERVABILITY__TYPE=structured_logging``."""
 
-    _LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+    _LEVELS: ClassVar[dict[str, int]] = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
 
     def __init__(self, logger_name: str = "tarnrag.observability") -> None:
         self._logger = logging.getLogger(logger_name)

@@ -15,14 +15,18 @@ from __future__ import annotations
 import asyncio
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import ComponentFactory
 from tarnrag.retrieval.components.fuser import Fuser, IdentityFuser
 from tarnrag.retrieval.components.merger import Merger
 from tarnrag.retrieval.components.reranker import Reranker
-from tarnrag.retrieval.components.retriever import DenseRetriever, RetrievalContext, Retriever
+from tarnrag.retrieval.components.retriever import (
+    DenseRetriever,
+    RetrievalContext,
+    Retriever,
+)
 from tarnrag.retrieval.pipeline.searcher import Searcher
 from tarnrag.retrieval.types import Query, SearchTrace
 

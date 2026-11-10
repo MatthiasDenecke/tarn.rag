@@ -15,10 +15,10 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import Any
 
+from bausatz import Component
 from pydantic import BaseModel, Field
 
 from tarnrag.contracts import Element, StructuredDocument
-from bausatz import Component
 from tarnrag.core.hashing import compute_content_hash
 
 

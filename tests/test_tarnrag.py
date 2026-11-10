@@ -352,7 +352,7 @@ async def test_ingest_reports_a_missing_path_alongside_a_real_one(tmp_path):
     while the file that does exist still ingests."""
     pytest.importorskip("onnxruntime")
     pytest.importorskip("tokenizers")
-    real = sorted(str(p) for p in corpus("corpus-1").glob("*.txt"))[0]
+    real = min(str(p) for p in corpus("corpus-1").glob("*.txt"))
 
     async with TarnRag(_settings(tmp_path), llm=_canned_llm()) as tarn:
         outcome = await tarn.ingest(["does/not/exist.txt", real])

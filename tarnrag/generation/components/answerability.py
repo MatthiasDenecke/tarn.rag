@@ -17,12 +17,16 @@ import re
 from dataclasses import replace
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
-from bausatz import ComponentFactory
 from tarnrag.core.text import looks_like_identifier, quoted_spans
 from tarnrag.generation.components._passages import passage_text
-from tarnrag.generation.components.reasoner import ReasonedAnswer, Reasoner, SingleHopReasoner
+from tarnrag.generation.components.reasoner import (
+    ReasonedAnswer,
+    Reasoner,
+    SingleHopReasoner,
+)
 from tarnrag.generation.context import GenerationContext
 from tarnrag.retrieval.types import Query
 

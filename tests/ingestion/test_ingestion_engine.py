@@ -6,20 +6,21 @@ model + index are available.
 """
 
 import io
+from pathlib import Path
 
 import pytest
 
+from tarnrag.core.engine.config import EmbeddingSettings
 from tarnrag.ingestion import IngestionEngine
+from tarnrag.ingestion.components.chunking.chunk import ChunkStage
+from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.engine.queue import InMemoryJobQueue, JobEnqueuer
 from tarnrag.ingestion.engine.result_sink import create_sink_registry
-from tarnrag.ingestion.components.chunking.chunk import ChunkStage
-from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
-from tarnrag.core.engine.config import EmbeddingSettings
-from tarnrag.ingestion.pipeline.embed import EmbedStage
-from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
 from tarnrag.ingestion.engine.worker import IngestionWorker
+from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
+from tarnrag.ingestion.pipeline.embed import EmbedStage
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
 
 
 class _FakeEmbedder:
@@ -196,7 +197,7 @@ async def test_ingest_streams_stages_bytes_and_queues_by_path(repo, tmp_path):
     meta = enq.jobs[0].item.metadata
     staged = meta["source_path"]
     assert staged.endswith(".pdf")  # extension preserved so the loader dispatches
-    assert open(staged, "rb").read() == b"%PDF-fake-bytes"  # streamed to disk
+    assert Path(staged).read_bytes() == b"%PDF-fake-bytes"  # streamed to disk
     assert meta["source_type"] == "pdf"
     assert meta["extractor"] == "docling"
 

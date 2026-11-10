@@ -17,7 +17,15 @@ import os
 import pytest
 from sqlalchemy import insert
 
-from tarnrag.contracts import Chunk, ChunkFilter, ChunkProvenance, Document, Embedding, MethodRef, Span
+from tarnrag.contracts import (
+    Chunk,
+    ChunkFilter,
+    ChunkProvenance,
+    Document,
+    Embedding,
+    MethodRef,
+    Span,
+)
 
 PG_URL = os.environ.get("TARNRAG_TEST_POSTGRES_URL", "")
 pytestmark = [
@@ -91,9 +99,9 @@ async def test_store_embeddings_upserts_on_chunk_id(pg_repo):
 async def test_dense_sparse_hydrate_roundtrip(pg_repo):
     a, b = await _index(pg_repo)
     # pgvector cosine KNN: the [1,0,0] query is nearest the tank chunk.
-    assert [c.chunk_id for c in await pg_repo.dense_knn([1.0, 0.0, 0.0], 2)][0] == a
+    assert (await pg_repo.dense_knn([1.0, 0.0, 0.0], 2))[0].chunk_id == a
     # tsvector ts_rank_cd: "tank inspection" surfaces the tank chunk.
-    assert [c.chunk_id for c in await pg_repo.sparse_search("tank inspection", 5)][0] == a
+    assert (await pg_repo.sparse_search("tank inspection", 5))[0].chunk_id == a
     # hydrate carries licensing + layout-aware provenance (the shared Core _chunk_provenance path).
     recs = {r.chunk_id: r for r in await pg_repo.hydrate([a, b])}
     assert recs[a].locator == "§6.4" and recs[a].ai_grounding_allowed is True

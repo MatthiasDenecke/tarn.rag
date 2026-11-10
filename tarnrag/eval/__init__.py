@@ -6,6 +6,17 @@ is relevant iff its text contains a gold phrase — so labels survive re-ingesti
 """
 
 from tarnrag.eval import metrics
+from tarnrag.eval.benchmark_runner import (
+    BRIDGE_RETRIEVAL,
+    MOTHRAG_PUBLISHED,
+    build_corpus_index,
+    format_comparison,
+    format_sweep,
+    run_benchmark,
+    run_over_corpus,
+    sweep_benchmark,
+    sweep_over_corpus,
+)
 from tarnrag.eval.benchmarks import (
     HF_LOADERS,
     LOADERS,
@@ -17,17 +28,6 @@ from tarnrag.eval.benchmarks import (
     load_hotpotqa_hf,
     load_musique,
     load_musique_hf,
-)
-from tarnrag.eval.benchmark_runner import (
-    BRIDGE_RETRIEVAL,
-    MOTHRAG_PUBLISHED,
-    build_corpus_index,
-    format_comparison,
-    format_sweep,
-    run_benchmark,
-    run_over_corpus,
-    sweep_benchmark,
-    sweep_over_corpus,
 )
 from tarnrag.eval.dataset import EvalQuery, EvalSet
 from tarnrag.eval.generation import (
@@ -54,47 +54,47 @@ from tarnrag.eval.harness import (
 )
 
 __all__ = [
-    "metrics",
-    # retrieval eval
-    "EvalQuery",
-    "EvalSet",
-    "EvalReport",
-    "QueryReport",
-    "evaluate_pipeline",
-    "sweep",
-    "by_query_type",
-    "format_reports",
-    "format_segmented",
-    # generation eval
-    "GenEvalQuery",
-    "GenEvalSet",
-    "GenEvalReport",
-    "GenQueryReport",
-    "evaluate_generation",
-    "sweep_generation",
-    "format_generation_reports",
-    "content_hit",
-    "token_f1",
-    "exact_match",
-    "citation_coverage",
+    "BRIDGE_RETRIEVAL",
+    "HF_LOADERS",
+    "LOADERS",
+    "MOTHRAG_PUBLISHED",
     # MOTHRAG benchmark harness
     "BenchItem",
-    "load_hotpotqa",
-    "load_hotpotqa_hf",
+    # retrieval eval
+    "EvalQuery",
+    "EvalReport",
+    "EvalSet",
+    # generation eval
+    "GenEvalQuery",
+    "GenEvalReport",
+    "GenEvalSet",
+    "GenQueryReport",
+    "QueryReport",
+    "build_corpus_index",
+    "by_query_type",
+    "citation_coverage",
+    "content_hit",
+    "corpus_from_items",
+    "evaluate_generation",
+    "evaluate_pipeline",
+    "exact_match",
+    "format_comparison",
+    "format_generation_reports",
+    "format_reports",
+    "format_segmented",
+    "format_sweep",
     "load_2wiki",
     "load_2wiki_hf",
+    "load_hotpotqa",
+    "load_hotpotqa_hf",
     "load_musique",
     "load_musique_hf",
-    "LOADERS",
-    "HF_LOADERS",
+    "metrics",
     "run_benchmark",
-    "sweep_benchmark",
-    "corpus_from_items",
-    "build_corpus_index",
     "run_over_corpus",
+    "sweep",
+    "sweep_benchmark",
+    "sweep_generation",
     "sweep_over_corpus",
-    "format_comparison",
-    "format_sweep",
-    "MOTHRAG_PUBLISHED",
-    "BRIDGE_RETRIEVAL",
+    "token_f1",
 ]

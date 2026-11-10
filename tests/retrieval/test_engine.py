@@ -2,17 +2,30 @@
 
 import pytest
 
-from tarnrag.contracts import IndexMeta
 from tarnrag.contracts import (
-    Candidate, Chunk, ChunkFilter, ChunkProvenance, ChunkRecord, Document, Embedding, MethodRef,
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    ChunkProvenance,
+    ChunkRecord,
+    Document,
+    Embedding,
+    IndexMeta,
+    MethodRef,
     RetrievalResult,
 )
 from tarnrag.core.engine.config import RETRIEVAL_PIPELINE, Settings
-from tarnrag.retrieval.components.fuser import IdentityFuser, RRFFuser
 from tarnrag.retrieval import (
-    AutoMerger, CrossEncoderReranker, DefaultLicensePolicy, Query, RetrievalContext, RetrievalEngine,
-    RetrievalError, RetrievalPipeline,
+    AutoMerger,
+    CrossEncoderReranker,
+    DefaultLicensePolicy,
+    Query,
+    RetrievalContext,
+    RetrievalEngine,
+    RetrievalError,
+    RetrievalPipeline,
 )
+from tarnrag.retrieval.components.fuser import IdentityFuser, RRFFuser
 from tarnrag.retrieval.types import Purpose, SearchTrace
 
 FINGERPRINT = "fp-123"

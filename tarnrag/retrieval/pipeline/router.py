@@ -13,11 +13,14 @@ from __future__ import annotations
 
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import ComponentFactory
-from tarnrag.retrieval.components.classifier import GenericQueryClassifier, QueryClassifier
+from tarnrag.retrieval.components.classifier import (
+    GenericQueryClassifier,
+    QueryClassifier,
+)
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.pipeline.pipeline import RetrievalPipeline
 from tarnrag.retrieval.pipeline.searcher import Searcher
