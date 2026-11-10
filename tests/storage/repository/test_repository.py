@@ -318,6 +318,24 @@ async def test_store_document_is_atomic(repo, monkeypatch):
     assert (await repo.get_document(doc_id)).content == "A"
 
 
+async def test_refresh_documents_rewrites_the_row_and_keeps_chunks_vectors_and_bm25(repo):
+    """``refresh_documents`` (the CleanAndNormalize sink's write) is row-only — unlike ``store_documents``,
+    it never replaces the document's chunks, so a replayed job can't wipe the index built after it."""
+    _, (cid,) = await repo.store_document_with_chunks(
+        Document(content="raw  text", metadata={"source_id": "s1", "content_hash": "h1"}),
+        [_chunk("tank inspection", 0, 1)],
+    )
+    await repo.store_embeddings([Embedding(chunk_id=cid, vector=[1.0, 0.0, 0.0])])
+    ids = await repo.refresh_documents(
+        [Document(content="raw text", metadata={"source_id": "s1", "content_hash": "h1"})]
+    )
+    assert ids == ["s1"] and (await repo.get_document("s1")).content == "raw text"
+    facts = await repo.document_facts("s1")
+    assert (facts.chunk_count, facts.embedding_count) == (1, 1)
+    assert [c.chunk_id for c in await repo.dense_knn([1.0, 0.0, 0.0], k=1)] == [cid]
+    assert [c.chunk_id for c in await repo.sparse_search("tank", k=1)] == [cid]
+
+
 async def test_dense_knn_and_hydrate(repo):
     _, (cid_a, cid_b) = await repo.store_document_with_chunks(
         Document(content="d", metadata={"source_id": "s1"}),

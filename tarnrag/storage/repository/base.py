@@ -379,6 +379,14 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
                 ids.append(doc_id)
             return ids
 
+    async def refresh_documents(self, docs: list[Document]) -> list[str]:
+        """Upsert the document rows (content + provenance columns) in one transaction, **without** the
+        chunk/index replacement ``store_documents`` does. Safe to replay: a re-ingest's replacement already
+        happened when ``LoadAndParse`` stored the document, so whatever chunks exist by now index this
+        document's (deterministically) cleaned text."""
+        async with self.engine.begin() as conn:
+            return [await self._upsert_document(conn, self._doc_values(doc)) for doc in docs]
+
     async def store_document_with_chunks(
         self, doc: Document, chunks: list[Chunk]
     ) -> tuple[str, list[str]]:
