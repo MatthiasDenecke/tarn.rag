@@ -50,7 +50,9 @@ lazily on first use. An `llm_judge` reranker also exists for LLM-scored rerankin
 ## Add auto-merge
 
 The optional `merger` slot recombines sibling chunks into their parent when enough of them are
-retrieved together, returning coherent larger passages:
+retrieved together, returning coherent larger passages. It repeats up the section tree (merged
+subsections can merge into *their* section), and a parent is only substituted when the query may
+see it (same license, scope, and grounding filter the retrievers apply):
 
 ```yaml
     merger: {class_name: auto_merge}

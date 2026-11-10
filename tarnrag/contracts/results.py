@@ -41,6 +41,24 @@ class ChunkFilter:
     method_scope: tuple[MethodRef, ...] | None = None  # None ⇒ ALL (no scope restriction)
     license_classes: tuple[str, ...] | None = None  # permitted license_class set; None ⇒ no class filter
 
+    def admits(self, record: ChunkRecord) -> bool:
+        """Whether a hydrated chunk passes this filter — the in-Python twin of the stores' SQL predicate,
+        for chunks that enter a result set *without* going through a retriever (e.g. the section parent
+        an ``AutoMerger`` hydrates on demand), so nothing reaches a caller unfiltered."""
+        if self.require_available and not record.available:
+            return False
+        if self.require_grounding and not record.ai_grounding_allowed:
+            return False
+        if self.license_classes is not None and record.license_class not in self.license_classes:
+            return False
+        if self.method_scope is not None:
+            return any(
+                ref.method_id == method_id and ref.method_version in (None, version)
+                for ref in self.method_scope
+                for method_id, version in record.methods
+            )
+        return True
+
 
 @dataclass(frozen=True)
 class ChunkRecord:

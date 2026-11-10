@@ -12,6 +12,7 @@ optional ``GroundingChecker`` and owns the flow:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Literal
 
 from bausatz import Component, ComponentFactory
@@ -64,6 +65,13 @@ class GenerationPipeline(Component):
 
     async def answer(self, query: Query, ctx: GenerationContext) -> GenerationResult:
         self.ensure_built()
+        # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — on top of
+        # the caller's purpose, never instead of it (``grounds_generation`` requires ai_grounding_allowed and
+        # intersects the purpose's license classes with GENERATION_GROUNDING's, ModusQ §5.6: tighten, never
+        # widen). Every path that runs a GenerationPipeline (engine, facade, the generation evals) goes
+        # through here; the reasoners derive their sub-queries with ``replace``, so the flag reaches every
+        # search. Code that drives a Reasoner directly sets the flag itself (eval.layout.tatqa_numeric does).
+        query = replace(query, grounds_generation=True)
         reasoned = await self._reasoner.reason(query, ctx)
         if reasoned.abstained:  # a gate refused BEFORE the read — surface it; nothing to verify
             return GenerationResult(

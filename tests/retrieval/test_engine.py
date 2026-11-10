@@ -324,7 +324,8 @@ async def test_auto_merger_keeps_leaves_when_parent_unavailable():
             )]
 
     out = await AutoMerger(AutoMerger.Config()).merge(
-        [_leaf("l1", -1.0), _leaf("l2", -2.0)], RetrievalContext(store=_FakeStore(), embedder=None)
+        Query(text="q"), [_leaf("l1", -1.0), _leaf("l2", -2.0)],
+        RetrievalContext(store=_FakeStore(), embedder=None),
     )
     assert [r.chunk_id for r in out] == ["l1", "l2"]
 
