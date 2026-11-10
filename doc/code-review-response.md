@@ -12,7 +12,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 
 | PR | Scope |
 |---|---|
-| #131 | Upgrade **bausatz to 0.3** (typed `Config` children); `sqlalchemy[asyncio]` dependency fix |
+| #131 | Upgrade **bausatz to 0.3** (typed `Config` children); `sqlalchemy[asyncio]` dependency fix; the repo-wide ruff fix (LOW-05), at the base so every PR passes the Ruff check |
 | #132 | WP-1: CRIT-01, MED-01, MED-02 (LOW-04 rejected) |
 | #133 | WP-2: CRIT-02, HIGH-01 |
 | #134 | WP-3a: HIGH-02, HIGH-03, HIGH-04 |
@@ -20,7 +20,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 | #136 | WP-4a: HIGH-06, HIGH-08 |
 | #137 | WP-4b: HIGH-07, MED-03, MED-04 |
 | #138 | WP-5: MED-05, MED-06, MED-07 (LOW-02 rejected) |
-| #139 | WP-6: MED-09, LOW-01, LOW-05, and this page |
+| #139 | WP-6: MED-09, LOW-01, and this page |
 
 ## Verdicts
 
@@ -49,7 +49,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 | LOW-02 | **Disagree** | Neither `_WARNED_NO_CRYPTO` nor `_extract_paragraphs` exists. `PdfTextExtractor` uses pdfplumber's line boxes as-is and never divides by page height. |
 | LOW-03 | **Disagree** | `InMemoryJobQueue` already keeps `dead_letters`, and the worker records `failed` before re-raising. `get_queue_stats()` doesn't exist. |
 | LOW-04 | **Disagree** | Neither bridge retriever builds a sub-`Query`. Both pass `ctx.filter_for(query)`, which includes the scope, to every `dense_knn` call. |
-| LOW-05 | Agree | `ruff check .` now passes. Intentional broad `except`s keep a `noqa` with the reason; everything else was fixed. Pinning ruff's version in CI would stop new default rules from failing builds unexpectedly. |
+| LOW-05 | Agree | Fixed at the base of the stack (#131), so every PR passes the Ruff check: `ruff check .` now passes. Intentional broad `except`s keep a `noqa` with the reason; everything else was fixed. Pinning ruff's version in CI would stop new default rules from failing builds unexpectedly. |
 
 ## Found while fixing
 
