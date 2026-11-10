@@ -13,18 +13,24 @@ from __future__ import annotations
 from typing import Any
 
 from bausatz import ComponentFactory
-from tarnrag.core.engine.config import LICENSE_POLICY, RETRIEVAL_PIPELINE, Settings, get_settings
+
+from tarnrag.contracts import IndexMeta, RetrievalResult
+from tarnrag.core.engine.config import (
+    LICENSE_POLICY,
+    RETRIEVAL_PIPELINE,
+    Settings,
+    get_settings,
+)
+from tarnrag.core.engine.engine import Engine
+from tarnrag.core.exceptions import RetrievalError
 from tarnrag.core.resources.cross_encoder import CrossEncoder, OnnxCrossEncoder
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.core.resources.llm import LanguageModel
-from tarnrag.core.engine.engine import Engine
-from tarnrag.core.exceptions import RetrievalError
-from tarnrag.contracts import IndexMeta, RetrievalResult
-from tarnrag.storage.repository import DocumentRepository
 from tarnrag.retrieval.components.license_policy import LicensePolicy
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.pipeline.searcher import Searcher
 from tarnrag.retrieval.types import Query, SearchTrace
+from tarnrag.storage.repository import DocumentRepository
 
 _DEFAULT_PIPELINE: dict[str, Any] = {"class_name": "retrieval_pipeline"}  # dense + identity fuser
 _DEFAULT_LICENSE_POLICY: dict[str, Any] = {"class_name": "default_license"}  # ModusQ §5.6

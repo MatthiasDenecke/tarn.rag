@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Self
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.engine.config import GENERATION_PIPELINE, Settings, get_settings
 from tarnrag.core.resources.llm import LanguageModel
 from tarnrag.generation.context import GenerationContext

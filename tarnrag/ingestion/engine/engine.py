@@ -25,15 +25,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from tarnrag.core.engine.config import INGESTION_PIPELINE, IdPolicy, Settings, get_settings
-from tarnrag.core.hashing import sha256_file, sha256_hex
-from tarnrag.core.engine.observability import Observability
-from tarnrag.core.engine.engine import Engine
-from tarnrag.core.exceptions import IngestionError
-from tarnrag.core.resources.embedder import Embedder
 from tarnrag.contracts import DocumentFactsSource, IndexMeta, PipelineItem
-from tarnrag.storage.repository import DocumentRepository
-from tarnrag.storage.status import DocumentStatusReader
+from tarnrag.core.engine.config import (
+    INGESTION_PIPELINE,
+    IdPolicy,
+    Settings,
+    get_settings,
+)
+from tarnrag.core.engine.engine import Engine
+from tarnrag.core.engine.observability import Observability
+from tarnrag.core.exceptions import IngestionError
+from tarnrag.core.hashing import sha256_file, sha256_hex
+from tarnrag.core.resources.embedder import Embedder
+from tarnrag.ingestion.components.extraction.load_parse import infer_source_kind
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
 from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.ingestion.pipeline.pipeline import Pipeline
@@ -43,10 +47,12 @@ from tarnrag.ingestion.engine.queue import (
     JobEnqueuer,
     PgQueuerJobQueue,
 )
-from tarnrag.ingestion.components.extraction.load_parse import infer_source_kind
+from tarnrag.ingestion.engine.result_sink import create_sink_registry
 from tarnrag.ingestion.engine.types import DocumentStatus, DocumentSummary
 from tarnrag.ingestion.engine.worker import IngestionWorker
-from tarnrag.ingestion.engine.result_sink import create_sink_registry
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
+from tarnrag.storage.repository import DocumentRepository
+from tarnrag.storage.status import DocumentStatusReader
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +462,7 @@ async def run_worker(settings: Settings | None = None) -> None:
     A distributed worker must use the SAME ``Settings`` — incl. ``components`` — as the producer."""
     engine = await IngestionEngine.create(settings)
     if not isinstance(engine._queue, JobConsumer):
-        raise RuntimeError("this engine has no consumable queue to run a worker on")
+        raise TypeError("this engine has no consumable queue (a JobConsumer) to run a worker on")
     worker = _attach_worker(engine._queue, engine.orchestrator, engine.obs)
     logger.info("Ingestion worker %s started", worker.worker_id)
     try:

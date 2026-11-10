@@ -7,7 +7,12 @@ Public API::
     from tarnrag import Outcome, Report, Issue, Severity  # what every facade call returns
 """
 
-from tarnrag.ingestion import DocumentStatus, DocumentSummary, IngestionEngine, run_worker
+from tarnrag.ingestion import (
+    DocumentStatus,
+    DocumentSummary,
+    IngestionEngine,
+    run_worker,
+)
 from tarnrag.report import Issue, Outcome, Report, Severity
 from tarnrag.retrieval import (
     MethodRef,
@@ -20,19 +25,19 @@ from tarnrag.retrieval import (
 from tarnrag.tarnrag import TarnRag  # imported last — wires the three engines together
 
 __all__ = [
-    "TarnRag",
-    "Outcome",
-    "Report",
-    "Issue",
-    "Severity",
-    "IngestionEngine",
-    "run_worker",
     "DocumentStatus",
     "DocumentSummary",
+    "IngestionEngine",
+    "Issue",
+    "MethodRef",
+    "Outcome",
+    "Query",
+    "Report",
     "RetrievalEngine",
     "RetrievalError",
-    "Query",
     "RetrievalResult",
     "SearchTrace",
-    "MethodRef",
+    "Severity",
+    "TarnRag",
+    "run_worker",
 ]

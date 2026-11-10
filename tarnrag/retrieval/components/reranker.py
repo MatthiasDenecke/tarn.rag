@@ -16,8 +16,9 @@ from abc import abstractmethod
 from dataclasses import replace
 from typing import Any, Literal
 
-from tarnrag.contracts import RetrievalResult
 from bausatz import Component
+
+from tarnrag.contracts import RetrievalResult
 from tarnrag.core.exceptions import RetrievalError
 from tarnrag.core.parsing import extract_json
 from tarnrag.core.resources.llm import Prompt

@@ -3,6 +3,7 @@
 import json
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.resources.llm import StaticLanguageModel
 from tarnrag.generation import (
     GenerationContext,

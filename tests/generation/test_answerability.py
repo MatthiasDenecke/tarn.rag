@@ -4,8 +4,13 @@ the evidence; pass through when they are (or when there's nothing checkable)."""
 import json
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.resources.llm import StaticLanguageModel
-from tarnrag.generation import AnswerabilityGateReasoner, GenerationContext, GenerationPipeline
+from tarnrag.generation import (
+    AnswerabilityGateReasoner,
+    GenerationContext,
+    GenerationPipeline,
+)
 from tarnrag.generation.components.reasoner import Reasoner
 from tarnrag.retrieval.types import Query
 

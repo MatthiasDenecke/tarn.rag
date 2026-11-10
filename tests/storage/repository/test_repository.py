@@ -85,7 +85,7 @@ async def test_document_with_chunks_and_idempotency(repo):
     assert len(await repo.get_chunks_by_document(doc_id)) == 2
 
     # Re-ingesting the same source_id upserts the document (same id) and replaces chunks.
-    doc_id2, ids2 = await repo.store_document_with_chunks(
+    doc_id2, _ = await repo.store_document_with_chunks(
         Document(content="updated", metadata={"source_id": "s1"}),
         [_chunk("only", 0, 1)],
     )
@@ -535,7 +535,7 @@ async def test_dense_knn_filter_by_license_class(repo):
 
 async def test_sparse_search_filter_drops_unavailable(repo):
     """The permitted-chunk filter applies to sparse retrieval too."""
-    _, (c1, c2) = await repo.store_document_with_chunks(
+    _, (_c1, c2) = await repo.store_document_with_chunks(
         Document(content="d", metadata={"source_id": "s1"}),
         [_chunk("tank inspection alpha", 0, 2, available=0), _chunk("tank inspection beta", 1, 2)],
     )

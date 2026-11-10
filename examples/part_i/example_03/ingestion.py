@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import asyncio
 
+from examples.common import base_settings, corpus, example_db, require_model
 from tarnrag import DocumentStatus, TarnRag
 from tarnrag.core.engine.config import INGESTION_PIPELINE
-
-from examples.common import base_settings, corpus, example_db, require_model
 
 # A small-chunk pipeline — several chunks per short doc (see example 02 for the JSON-pipeline idea).
 PIPELINE_SPEC = {
