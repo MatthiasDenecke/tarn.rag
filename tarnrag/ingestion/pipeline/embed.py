@@ -59,6 +59,11 @@ class EmbedStage(PipelineStage):
         if self._owns_embedder and self._embedder is not None:
             self._embedder.close()
 
+    def accepts(self, item: PipelineItem) -> bool:
+        """Only retrieval units get a vector — the orchestrator never enqueues an Embed job for a section
+        parent."""
+        return is_retrieval_unit(item.provenance)
+
     def process(self, item: PipelineItem) -> Iterator[Embedding]:
         yield from self.process_batch([item])
 
@@ -67,7 +72,7 @@ class EmbedStage(PipelineStage):
         Embed items in ``embedding.batch_size`` groups, yielding one ``Embedding`` per chunk
         (``chunk_id`` taken from ``metadata['chunk_id']``).
         """
-        items = [it for it in items if is_retrieval_unit(it.provenance)]
+        items = [it for it in items if self.accepts(it)]  # also when called directly, not via a job
         if not items:
             return
         embedder = self._get_embedder()
