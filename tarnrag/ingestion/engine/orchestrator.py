@@ -190,7 +190,10 @@ class _OrchestratorBatchContext(BatchContext):
         await self._orch._record(self._batch.jobs, "completed")
         if obs:
             obs.counter(f"stage.{self._tag}.completed")
-        # Fan-out (D1): one downstream job per produced item, per next stage.
+        # Fan-out (D1): one downstream job per produced item, per next stage — unless that stage has no
+        # work for the item (e.g. Embed skips section parents), which then never reaches the queue.
         for next_stage in self._orch.dag.get_downstream_stages(self._batch.stage_name):
+            stage = self._orch.dag.get_stage(next_stage)
             for item in self._produced:
-                await self._orch._enqueue(self._orch._make_job(item, next_stage))
+                if stage.accepts(item):
+                    await self._orch._enqueue(self._orch._make_job(item, next_stage))
