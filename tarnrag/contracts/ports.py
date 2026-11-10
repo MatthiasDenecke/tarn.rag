@@ -32,6 +32,13 @@ class ChunkStore(ABC):
         return [await self.store_document(doc) for doc in docs]
 
     @abstractmethod
+    async def refresh_documents(self, docs: list[Document]) -> list[str]:
+        """Upsert the document rows **only** — their chunks/embeddings are left alone (unlike
+        ``store_documents``, which replaces them). For a stage that rewrites an already stored document's
+        text (CleanAndNormalize): a replayed job then can't wipe the chunks and vectors built after it.
+        Return ids in order."""
+
+    @abstractmethod
     async def store_chunks(self, chunks: list[Chunk]) -> list[str]:
         """Persist chunks atomically, replacing any chunks their documents already hold (idempotent
         on retry); return their ids (in order)."""

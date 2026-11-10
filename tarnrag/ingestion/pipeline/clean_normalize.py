@@ -66,6 +66,31 @@ class _OffsetMap:
         return s + shift + min(pos - s, len(r))  # inside it: into the replacement
 
 
+class _Protected:
+    """The protected ``(start, end)`` ranges, sorted and merged, with an O(log n) overlap test — a
+    whitespace match is checked against them once per match, and a table-heavy filing has hundreds."""
+
+    def __init__(self, ranges: list[tuple[int, int]]) -> None:
+        merged: list[list[int]] = []
+        for s, e in sorted(ranges):
+            if merged and s < merged[-1][1]:  # overlapping: one range (touching ones stay apart — exactness)
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        self._starts = [s for s, _ in merged]
+        self._ends = [e for _, e in merged]  # non-decreasing too: each range starts where the last ended, or later
+
+    def overlaps(self, start: int, end: int) -> bool:
+        """Whether ``[start, end)`` intersects a protected range — exactly ``any(s < end and start < e)``
+        over the original ranges."""
+        i = bisect_right(self._ends, start)  # the first range ending after ``start``; later ones begin later
+        return i < len(self._starts) and self._starts[i] < end
+
+    def remapped(self, mapping: _OffsetMap) -> _Protected:
+        """The ranges carried through an edit pass (the map is monotone, so order and disjointness hold)."""
+        return _Protected([(mapping(s), mapping(e)) for s, e in zip(self._starts, self._ends)])
+
+
 def _clean(
     text: str, collapse: bool, protected: list[tuple[int, int]] = ()
 ) -> tuple[str, list[_OffsetMap]]:
@@ -77,12 +102,12 @@ def _clean(
         rules += [(_BLANKS, True), (_PARAGRAPHS, True)]
     rules.append((_EDGES, True))
     maps: list[_OffsetMap] = []
+    guard = _Protected(list(protected))
     for (pattern, repl), respects_protection in rules:
         edits = [
             (m.start(), m.end(), repl)
             for m in pattern.finditer(text)
-            if m.group() != repl
-            and not (respects_protection and any(s < m.end() and m.start() < e for s, e in protected))
+            if m.group() != repl and not (respects_protection and guard.overlaps(m.start(), m.end()))
         ]
         if not edits:
             continue
@@ -92,7 +117,7 @@ def _clean(
             parts += [text[last:s], r]
             last = e
         text = "".join(parts) + text[last:]
-        protected = [(mapping(s), mapping(e)) for s, e in protected]
+        guard = guard.remapped(mapping)
         maps.append(mapping)
     return text, maps
 
@@ -132,7 +157,14 @@ class CleanAndNormalizeStage(MapperStage):
 
     def _clean_document(self, source: StructuredDocument) -> StructuredDocument:
         """A cleaned copy of ``source`` (the upstream document is never mutated) with every span
-        remapped into the cleaned text and each element's text re-derived from its span."""
+        remapped into the cleaned text.
+
+        An element's text is **re-sliced** from the cleaned text when it was exactly its one span's slice
+        (every built-in extractor's elements), so ``doc.text[span] == element.text`` still holds. Any
+        other element — several spans, or text that differs from its span — has its text cleaned **on its
+        own** by the same rules: its spans still index the cleaned text exactly, but its text is a separate
+        rendering and can differ from the slices at a span's edge (a stripped edge, a whitespace run that
+        straddles the span boundary)."""
         collapse = self.config.collapse_whitespace
         doc = source.model_copy(deep=True)
         protected = [
