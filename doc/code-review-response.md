@@ -21,6 +21,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 | #137 | WP-4b: HIGH-07, MED-03, MED-04 |
 | #138 | WP-5: MED-05, MED-06, MED-07 (LOW-02 rejected) |
 | #139 | WP-6: MED-09, LOW-01, and this page |
+| #140 | Follow-up: failed ingestion jobs are retried in distributed mode (see below) |
 
 ## Verdicts
 
@@ -67,7 +68,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
   an ancestor" check compared `source_element_ids`, which are never persisted, so it never fired on
   real data. It now compares persisted char spans. An end-to-end test over really ingested chunks
   catches it (#132).
-- **Distributed retries (fixed in a follow-up PR).** The distributed how-to and the code comments
+- **Distributed retries (fixed in #140).** The distributed how-to and the code comments
   said a job whose handler raises is requeued. With pgQueuer's default executor it wasn't: the job was
   logged as `exception` and deleted (`on_failure="delete"`). Only a crashed worker's job came back,
   once its heartbeat went stale. The chosen policy is that a failed job is retried. The adapter now
