@@ -30,12 +30,11 @@ import json
 import os
 from pathlib import Path
 
+from examples.common import base_settings, example_db, require_model
 from tarnrag import TarnRag
 from tarnrag.core.engine.config import GENERATION_PIPELINE, RETRIEVAL_PIPELINE
 from tarnrag.core.resources.llm import LanguageModel
 from tarnrag.generation import GenerationResult
-
-from examples.common import base_settings, example_db, require_model
 
 HERE = Path(__file__).resolve().parent
 RETRIEVAL_SPEC = json.loads((HERE / "retrieval.json").read_text())

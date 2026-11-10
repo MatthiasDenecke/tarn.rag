@@ -15,10 +15,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Literal
 
+from bausatz import Component, ComponentFactory
 from pydantic import Field
 
-from bausatz import Component, ComponentFactory
-from tarnrag.generation.components.assembler import EvidenceAssembler, ProvenanceAssembler
+from tarnrag.generation.components.assembler import (
+    EvidenceAssembler,
+    ProvenanceAssembler,
+)
 from tarnrag.generation.components.grounding import GroundingChecker, Verdict
 from tarnrag.generation.components.reasoner import Reasoner, SingleHopReasoner
 from tarnrag.generation.context import GenerationContext

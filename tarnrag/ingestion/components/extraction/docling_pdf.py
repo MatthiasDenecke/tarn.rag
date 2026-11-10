@@ -13,6 +13,7 @@ without text are skipped for now (text-only normalized text).
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Literal
 
 from tarnrag.contracts import (
@@ -48,7 +49,9 @@ class DoclingExtractor(Extractor):
 
     def _converter(self):
         if self._conv is None:
-            from docling.document_converter import DocumentConverter  # heavy; lazily imported once
+            from docling.document_converter import (
+                DocumentConverter,  # heavy; lazily imported once
+            )
 
             self._conv = DocumentConverter()
         return self._conv
@@ -191,8 +194,6 @@ class DoclingExtractor(Extractor):
         size = getattr(pages.get(page_no), "size", None) if pages and page_no in pages else None
         height = getattr(size, "height", None) if size else None
         if height is not None:
-            try:
+            with contextlib.suppress(Exception):  # geometry is best-effort; fall back to raw coords
                 bbox = bbox.to_top_left_origin(height)
-            except Exception:  # noqa: BLE001 — geometry is best-effort; fall back to raw coords
-                pass
         return tuple(round(float(v), 2) for v in bbox.as_tuple())

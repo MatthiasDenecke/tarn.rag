@@ -21,7 +21,14 @@ from typing import Literal
 
 from pydantic import Field
 
-from tarnrag.contracts import Element, ElementKind, Span, StructuredDocument, Table, TableCell
+from tarnrag.contracts import (
+    Element,
+    ElementKind,
+    Span,
+    StructuredDocument,
+    Table,
+    TableCell,
+)
 from tarnrag.ingestion.components.extraction.extractor import Extractor, Source
 
 
