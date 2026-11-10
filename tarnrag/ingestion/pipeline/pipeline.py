@@ -57,6 +57,13 @@ class PipelineStage(Component):
     def process(self, item: PipelineItem) -> Iterator[Any]:
         """Transform one item; yield zero or more results."""
 
+    def accepts(self, item: PipelineItem) -> bool:
+        """Whether this stage has work for ``item`` — asked by the orchestrator before it enqueues a job, so
+        an item the stage would only discard never costs a queue round trip or a ``job_status`` row.
+        Pure (no I/O); default: every item. A stage that overrides it must also drop non-accepted items
+        itself (a direct ``process_batch`` call doesn't go through the orchestrator)."""
+        return True
+
     def process_batch(self, items: list[PipelineItem]) -> Iterator[Any]:
         """Batch entrypoint the worker calls (D3). Default maps ``process`` over the
         items one at a time; batch-aware stages (e.g. EmbedStage) override this to

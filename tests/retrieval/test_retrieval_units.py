@@ -56,6 +56,9 @@ async def test_a_sectioned_document_indexes_and_returns_only_leaves(tmp_path):
         assert parents  # the section tree was built
         assert status.status == "complete"  # every leaf got its vector
         assert status.embedding_count == len(chunks) - len(parents)  # …and no parent did
+        jobs = await repo.document_jobs("manual")
+        embed_jobs = [j for j in jobs if j["stage_name"].startswith("Embed")]
+        assert len(embed_jobs) == len(chunks) - len(parents)  # a parent never even gets an Embed job
         retrieval = await RetrievalEngine.open(repo, _embedder(settings), settings)
         hits = await retrieval.search(Query(text="pump valve inspect torque", top_k=20))
         assert hits and not {h.chunk_id for h in hits} & parents
