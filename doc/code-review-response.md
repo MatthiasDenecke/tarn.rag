@@ -27,7 +27,7 @@ The fixes are a stack of PRs. Merge them in order, because each one builds on th
 
 | ID | Verdict | Notes |
 |---|---|---|
-| CRIT-01 | Agree | No production code ever set `Purpose.GENERATION_GROUNDING`. `GenerationPipeline.answer` now enforces it, so every reasoner sub-query carries it. |
+| CRIT-01 | Agree | No production code ever set `Purpose.GENERATION_GROUNDING`. `GenerationPipeline.answer` now marks every retrieval `grounds_generation`, and every reasoner sub-query carries the flag. It is **additive**: it requires `ai_grounding_allowed`, and the license policy intersects the caller's purpose classes with `GENERATION_GROUNDING`'s. An absent purpose fails closed. (The first version replaced the purpose, which could *widen* a narrowed map; this was caught in review of #132.) |
 | CRIT-02 | Agree | The stage was dead code. It now cleans the `StructuredDocument` through an offset map (all spans remapped, code and tables kept verbatim) and stores the cleaned text again. The default stage order is unchanged, because reordering would rename the positional DAG nodes that in-flight distributed jobs refer to. |
 | HIGH-01 | Agree | Section parents are no longer embedded or sparse-indexed, and every search filters to `level = 0`. That filter also covers indexes built before the change. |
 | HIGH-02 | Agree | Job rows are cleared when a document is resubmitted, and queued or processing jobs now report `in_progress`. |
