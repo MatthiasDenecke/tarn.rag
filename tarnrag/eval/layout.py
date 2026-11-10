@@ -357,7 +357,9 @@ async def tatqa_numeric(
 
     async def _one(q: TatQaNumericQuery) -> tuple[bool, bool]:
         async with sem:
-            out = await reasoner.reason(Query(text=q.question, top_k=k), ctx)
+            # The reasoner runs directly (not through a GenerationPipeline), so the grounding flag the
+            # pipeline would add is set here: a reader leg must not see grounding-disallowed chunks.
+            out = await reasoner.reason(Query(text=q.question, top_k=k, grounds_generation=True), ctx)
         if out.abstained:
             return False, False
         try:

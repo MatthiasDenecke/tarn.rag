@@ -255,11 +255,9 @@ class Console:
         identity/provenance carried on each final result. Pure rendering — returns a renderable."""
         by_id = {r.chunk_id: r for stage in trace.stages for r in stage.results}
         parts: list = [Text.assemble(("query: ", "bold"), trace.query.text)]
-        if trace.routing is not None:
-            query_type, route = trace.routing
-            parts.append(
-                Text(f"routed: query_type={query_type or '∅'} → route {route!r}", style="magenta")
-            )
+        if trace.route_path:  # one hop per router passed through (nested routers each add theirs)
+            hops = " → ".join(f"query_type={qt or '∅'} → route {route!r}" for qt, route in trace.route_path)
+            parts.append(Text(f"routed: {hops}", style="magenta"))
         parts.append(Console._params_summary(trace.query))
         if trace.per_retriever:
             parts.append(Text("\nretrievers (before fusion)", style="bold"))
@@ -302,7 +300,7 @@ class Console:
         """A dim line: the over-fetch targets and the license/scope pre-filter the retrievers apply (which
         chunks a query may even see) — intermediate context the result tables don't show."""
         scope = "ALL" if query.scope == "ALL" else f"{len(query.scope)} method(s)"
-        grounding = " · grounding-required" if query.purpose.value == "GENERATION_GROUNDING" else ""
+        grounding = " · grounding-required" if query.permitted_filter().require_grounding else ""
         return Text(
             f"over-fetch: dense top-{query.dense_k}, sparse top-{query.sparse_k}  ·  "
             f"pre-filter: purpose={query.purpose.value}, scope={scope}{grounding}",

@@ -234,6 +234,10 @@ class StructureAwareChunker(Chunker):
         return self._create_temp_chunk(
             text,
             element_ids=head_ids + [eid for c in children for eid in c.provenance.source_element_ids],
+            # INVARIANT (relied on by retrieval's ``AutoMerger._drop_covered``): a parent's geometry is the
+            # literal concatenation of its heading's and its children's spans — every descendant's
+            # ``(start, end)`` appears in it verbatim. Coalescing adjacent spans here would silently stop the
+            # merger from recognizing a section's own fragments (pinned by test_chunking).
             geometry=head_geometry + [s for c in children for s in c.provenance.geometry],
             header_path=header_path,
             level=1 + max(c.provenance.level for c in children),
