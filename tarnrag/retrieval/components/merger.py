@@ -122,10 +122,10 @@ class AutoMerger(Merger):
         """Drop each result whose content a higher-level result of the same document already carries.
         A section parent's geometry is the concatenation of its descendants' char spans (the chunker's
         aggregation; geometry is persisted, so it survives hydration), so containment is a subset test on
-        the ``(start, end)`` footprints — no store round-trip. Covers a leaf left behind under a parent
-        merged at a higher level, and a section retrieved alongside its own fragment from an index that
-        still holds parent vectors. (Pieces of one oversize element share its span but sit at the same
-        level, so neither covers the other.)"""
+        the ``(start, end)`` footprints — no store round-trip. Retrievers return only leaves (the stores'
+        ``level = 0`` predicate), so every section here is one this merger built: the case is a leaf left
+        behind under a parent merged at a higher level. (Pieces of one oversize element share its span but
+        sit at the same level, so neither covers the other.)"""
         def footprint(r: RetrievalResult) -> set[tuple[int, int]]:
             return {(s.start, s.end) for s in r.provenance.geometry} if r.provenance else set()
 
