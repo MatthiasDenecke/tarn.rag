@@ -27,7 +27,14 @@ import sqlite_vec
 from sqlalchemy import Text, event
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from tarnrag.contracts import Candidate, Chunk, ChunkFilter, ChunkRecord, Embedding, is_retrieval_unit
+from tarnrag.contracts import (
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    ChunkRecord,
+    Embedding,
+    is_retrieval_unit,
+)
 from tarnrag.core.text import looks_like_identifier, quoted_spans
 from tarnrag.storage.repository.base import DocumentRepository
 

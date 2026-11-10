@@ -43,23 +43,11 @@ from tarnrag.contracts.structure import (
 
 __all__ = [
     "Annotation",
-    "Span",
-    "PageBox",
-    "Geometry",
-    "ChunkProvenance",
-    "is_retrieval_unit",
-    # ports
-    "ChunkStore",
-    "RetrievalStore",
-    "DocumentFactsSource",
-    "JobStatusSource",
-    # results
     "Candidate",
     "Chunk",
     "ChunkFilter",
     "ChunkProvenance",
     "ChunkRecord",
-    # ports
     "ChunkStore",
     "CorpusStatus",
     "Document",
@@ -69,18 +57,16 @@ __all__ = [
     "ElementKind",
     "Embedding",
     "Geometry",
-    # index_meta
     "IndexMeta",
     "JobStatusSource",
     "MethodRef",
     "PageBox",
-    # dtos
     "PipelineItem",
     "RetrievalResult",
     "RetrievalStore",
     "Span",
-    # structure (layout-aware extraction)
     "StructuredDocument",
     "Table",
     "TableCell",
+    "is_retrieval_unit",
 ]
