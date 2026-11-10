@@ -16,10 +16,9 @@ import asyncio
 import json
 from pathlib import Path
 
+from examples.common import base_settings, corpus, example_db, require_model
 from tarnrag import DocumentStatus, TarnRag
 from tarnrag.core.engine.config import INGESTION_PIPELINE
-
-from examples.common import base_settings, corpus, example_db, require_model
 
 HERE = Path(__file__).resolve().parent
 PIPELINE_SPEC = json.loads((HERE / "ingestion.json").read_text())

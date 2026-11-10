@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass, field
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.engine.config import GENERATION_PIPELINE, DatabaseSettings, Settings
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.core.resources.llm import LanguageModel
