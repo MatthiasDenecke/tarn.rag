@@ -66,7 +66,7 @@ def test_trace_view_renders_query_routing_retrievers_and_stages():
             RetrieverCandidates("sparse", [Candidate("c1", 1, -2.10)]),
         ],
         stages=[SearchStage("fused", fused), SearchStage("final", fused[:1])],
-        routing=("semantic", "default"),
+        route_path=[("semantic", "default")],
     )
     text = _render(Console.create_trace_view(trace))
     assert "how to inspect a tank" in text               # the query

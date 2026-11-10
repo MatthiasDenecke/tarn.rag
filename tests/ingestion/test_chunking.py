@@ -178,3 +178,30 @@ def test_driver_emits_tree_metadata_for_persistence():
     parent, leaf1, leaf2 = out
     assert parent.metadata["chunk_level"] == 1 and parent.metadata["parent_ordinal"] is None
     assert leaf1.metadata["parent_ordinal"] == 0 and leaf2.metadata["parent_ordinal"] == 0  # point at the parent's ordinal
+
+
+def test_every_parent_geometry_contains_its_descendants_spans_verbatim():
+    """The merger detects "a returned section already covers this result" by a subset test on persisted
+    ``(start, end)`` spans (``AutoMerger._drop_covered``), so each section parent's geometry must hold
+    every descendant's spans verbatim — if the chunker ever coalesced adjacent spans, the merger would
+    silently stop recognizing a section's own fragments. Pinned here, in the module that owns it."""
+    from tarnrag.ingestion.components.extraction.extractor import Source
+    from tarnrag.ingestion.components.extraction.markdown import MarkdownExtractor
+
+    md = (
+        "# Pumps\n\nInspect pump seals monthly.\n\nReplace pump bearings yearly.\n\n"
+        "## Valves\n\nCheck valve torque weekly.\n\nLubricate valve stems often.\n\n"
+        "### Gaskets\n\nSwap the flange gaskets.\n\nTorque the flange bolts.\n"
+    )
+    doc = MarkdownExtractor(MarkdownExtractor.Config()).extract(Source(source_id="d", source_kind="md", content=md))
+    chunks = StructureAwareChunker(StructureAwareChunker.Config(max_chars=40)).chunk(doc)
+    assert max(c.provenance.level for c in chunks) >= 2  # a real multi-level tree
+
+    def spans(chunk):
+        return {(s.start, s.end) for s in chunk.provenance.geometry}
+
+    for child in chunks:
+        ancestor = child.parent_index
+        while ancestor is not None:  # every ancestor, not just the direct parent
+            assert spans(child) <= spans(chunks[ancestor]), (child.text, chunks[ancestor].text)
+            ancestor = chunks[ancestor].parent_index
