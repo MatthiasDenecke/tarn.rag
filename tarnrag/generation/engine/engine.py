@@ -21,7 +21,7 @@ from tarnrag.generation.pipeline.pipeline import GenerationPipeline
 from tarnrag.generation.types import GenerationResult
 from tarnrag.retrieval.engine.engine import RetrievalEngine
 from tarnrag.retrieval.engine.retrieval_engine_protocol import RetrievalEngineProtocol
-from tarnrag.retrieval.types import Purpose, Query
+from tarnrag.retrieval.types import Query
 
 
 class GenerationEngine:
@@ -72,14 +72,15 @@ class GenerationEngine:
         return cls.assemble(retrieval, llm, settings, owns_resources=True)
 
     async def answer(self, query: Query) -> GenerationResult:
-        """Answer a question: retrieve, read, and return the answer + proof tree + evidence. Retrieval
-        runs under ``Purpose.GENERATION_GROUNDING`` (the pipeline enforces it), so chunks ingested with
-        ``ai_grounding_allowed=False`` never reach the reader."""
+        """Answer a question: retrieve, read, and return the answer + proof tree + evidence. Retrieval is
+        marked ``grounds_generation`` (the pipeline enforces it, on top of the query's own purpose), so
+        chunks ingested with ``ai_grounding_allowed=False`` never reach the reader, and the license classes
+        are never wider than the query's purpose allows."""
         return await self._pipeline.answer(query, GenerationContext(self.retrieval, self.llm))
 
     async def answer_text(self, text: str) -> GenerationResult:
         """Convenience over :meth:`answer`: build a :class:`Query` from a raw question string."""
-        return await self.answer(Query(text=text, purpose=Purpose.GENERATION_GROUNDING))
+        return await self.answer(Query(text=text))
 
     async def aclose(self) -> None:
         """Release the retrieval engine + LLM **when this engine built them** (the standalone ``create``

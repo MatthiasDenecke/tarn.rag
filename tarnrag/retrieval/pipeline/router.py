@@ -68,7 +68,7 @@ class RoutingRetrievalPipeline(Searcher):
         searcher = self._routes.get(query.query_type, self._default)
         if trace is not None:  # record which route this query took before delegating to it
             route_key = query.query_type if query.query_type in self._routes else "default"
-            trace.routing = (query.query_type, route_key)
+            trace.route_path.append((query.query_type, route_key))
         if not supplied and isinstance(searcher, RoutingRetrievalPipeline):
             query = replace(query, query_type="")  # a nested router classifies by its own taxonomy
         return await searcher.search(query, ctx, trace)
