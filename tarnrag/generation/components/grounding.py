@@ -25,10 +25,10 @@ from abc import abstractmethod
 from enum import Enum
 from typing import Any, Literal
 
+from bausatz import Component, ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import Component, ComponentFactory
 from tarnrag.core.resources.llm import Prompt
 from tarnrag.generation.components._parsing import extract_json
 from tarnrag.generation.components._passages import passage_text
@@ -69,9 +69,13 @@ class GroundingChecker(Component):
 
 # A compact stop set for the overlap heuristic (content words only — small + self-contained).
 _STOPWORDS = frozenset(
-    "a an the of to in on for and or but with at by from as into about than that this these those is are "
-    "was were be been being it its do does did can could should would will may might has have had not no "
-    "you your we our they their he she his her i".split()
+    [
+        "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "but", "with", "at", "by",
+        "from", "as", "into", "about", "than", "that", "this", "these", "those", "is", "are", "was",
+        "were", "be", "been", "being", "it", "its", "do", "does", "did", "can", "could", "should",
+        "would", "will", "may", "might", "has", "have", "had", "not", "no", "you", "your", "we",
+        "our", "they", "their", "he", "she", "his", "her", "i"
+    ]
 )
 _TOKEN = re.compile(r"\w+")
 

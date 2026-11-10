@@ -23,6 +23,7 @@ the first ``ask``. It closes what it built, and only that. Use it directly::
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Self
 
 from tarnrag.contracts import CorpusStatus, RetrievalResult
 from tarnrag.core.engine.config import Settings
@@ -98,7 +99,7 @@ class TarnRag:
         if self._repository is not None:
             await self._repository.disconnect()  # the one store, shared by every engine
 
-    async def __aenter__(self) -> TarnRag:
+    async def __aenter__(self) -> Self:
         return await self.open()
 
     async def __aexit__(self, *exc: object) -> None:

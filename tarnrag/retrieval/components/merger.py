@@ -12,10 +12,10 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Literal
 
+from bausatz import Component
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import Component
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.types import Query
 

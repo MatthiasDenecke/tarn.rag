@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from bausatz import ComponentFactory
+
 from tarnrag.eval.dataset import EvalSet
 from tarnrag.eval.metrics import hit_at_k, ndcg_at_k, reciprocal_rank
 from tarnrag.retrieval.components.retriever import RetrievalContext

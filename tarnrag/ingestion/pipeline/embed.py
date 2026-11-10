@@ -23,8 +23,8 @@ from typing import Literal
 
 from pydantic import Field
 
-from tarnrag.core.engine.config import EmbeddingSettings
 from tarnrag.contracts import Embedding, PipelineItem, is_retrieval_unit
+from tarnrag.core.engine.config import EmbeddingSettings
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
 

@@ -13,6 +13,7 @@ from abc import abstractmethod
 from typing import Literal
 
 from bausatz import Component
+
 from tarnrag.generation.components.reasoner import ReasonedAnswer
 from tarnrag.generation.types import Citation, ProofStep
 

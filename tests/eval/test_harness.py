@@ -1,9 +1,9 @@
 """The eval harness: sweep retrieval-pipeline specs over a labeled query set against one index."""
 
 import pytest
+from bausatz import ComponentFactory
 
 from tarnrag.contracts import Chunk, Document, Embedding
-from bausatz import ComponentFactory
 from tarnrag.eval import (
     EvalQuery,
     EvalSet,

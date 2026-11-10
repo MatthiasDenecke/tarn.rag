@@ -17,17 +17,21 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult
-from bausatz import ComponentFactory
 from tarnrag.core.resources.llm import Prompt
 from tarnrag.generation.components.grounding import (
     GroundingChecker,
     HeuristicGroundingChecker,
     Verdict,
 )
-from tarnrag.generation.components.reasoner import _READ_SYSTEM, ReasonedAnswer, Reasoner
+from tarnrag.generation.components.reasoner import (
+    _READ_SYSTEM,
+    ReasonedAnswer,
+    Reasoner,
+)
 from tarnrag.generation.context import GenerationContext
 from tarnrag.retrieval.types import Query
 

@@ -21,8 +21,9 @@ from abc import abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from tarnrag.contracts import RetrievalResult
 from bausatz import Component
+
+from tarnrag.contracts import RetrievalResult
 from tarnrag.core.resources.llm import Prompt
 from tarnrag.generation.components._parsing import extract_json
 from tarnrag.generation.components._passages import passage_text

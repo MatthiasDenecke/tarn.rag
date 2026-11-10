@@ -3,6 +3,7 @@
 from typing import Literal
 
 from bausatz import ComponentFactory
+
 from tarnrag.retrieval import (
     GenericQueryClassifier,
     Query,
