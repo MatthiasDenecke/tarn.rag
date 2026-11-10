@@ -21,20 +21,19 @@ from tarnrag.eval.benchmark_runner import HYBRID_RETRIEVAL
 from tarnrag.eval.layout import (
     SourceHitReport,
     build_tatqa_index,
-    format_numeric,
-    load_tatqa_numeric,
-    tatqa_numeric,
     format_attribution,
+    format_numeric,
     format_source_hit,
     load_tatqa,
+    load_tatqa_numeric,
     stream_tatqa,
     tatqa_attribution,
+    tatqa_numeric,
     tatqa_source_hit,
 )
 from tarnrag.retrieval.components.classifier import StructuralQueryClassifier
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.types import Query
-
 
 # ---------------------------------------------------------------------------- the S1 sweep (--s1)
 # Query understanding as the shipped default (doc/s1-scope.md): sweep the candidate quality-profile
@@ -161,14 +160,14 @@ async def _s1_sweep(queries, repo, embedder, settings, *, k: int, concurrency: i
     }
     await _run_leg("ROUTED+CE", routed_ce)
 
-    print("\n=== S1 sweep summary (source-hit@%d, n=%d) ===" % (k, len(queries)))
+    print(f"\n=== S1 sweep summary (source-hit@{k}, n={len(queries)}) ===")
     segs = sorted({seg for r in results.values() for seg in r.by_segment})
     header = f"{'leg':<14}" + "".join(f"{s:>12}" for s in segs) + f"{'lexical':>12}{'semantic':>12}{'overall':>12}"
     print(header + "\n" + "-" * len(header))
     for name, r in results.items():
         row = f"{name:<14}" + "".join(f"{r.by_segment.get(s, (0, 0.0))[1]:>12.3f}" for s in segs)
-        lex_n, lex = _slice_rate(r, labels, "lexical")
-        sem_n, sem = _slice_rate(r, labels, "semantic")
+        _, lex = _slice_rate(r, labels, "lexical")
+        _, sem = _slice_rate(r, labels, "semantic")
         print(row + f"{lex:>12.3f}{sem:>12.3f}{r.source_hit:>12.3f}")
 
 

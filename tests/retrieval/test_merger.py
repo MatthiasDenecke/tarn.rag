@@ -3,10 +3,15 @@
 
 Unit-level: a fake store serves the section parents; the results stand in for retrieved leaves."""
 
-from tarnrag.contracts import ChunkProvenance, ChunkRecord, MethodRef, RetrievalResult, Span
+from tarnrag.contracts import (
+    ChunkProvenance,
+    ChunkRecord,
+    MethodRef,
+    RetrievalResult,
+    Span,
+)
 from tarnrag.retrieval import AutoMerger, Query, RetrievalContext
 from tarnrag.retrieval.types import Purpose
-
 
 # Each named piece of text sits at its own char span; a chunk's geometry is the spans of what it covers
 # (a section parent's = its heading + every descendant's — the chunker's aggregation, persisted).

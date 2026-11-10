@@ -13,8 +13,9 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Any
 
-from tarnrag.contracts import Annotation, Element, Geometry, StructuredDocument
 from bausatz import Component
+
+from tarnrag.contracts import Annotation, Element, Geometry, StructuredDocument
 
 
 class Enricher(Component):

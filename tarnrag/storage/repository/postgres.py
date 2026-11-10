@@ -11,7 +11,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
-from pgvector.sqlalchemy import Vector
 
 from tarnrag.contracts import Candidate, ChunkFilter
 from tarnrag.core.text import lexical_query

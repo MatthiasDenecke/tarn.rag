@@ -30,7 +30,9 @@ def _hf_rows(repo: str, split: str, rows: Iterable[dict] | None, *, config: str 
     else a streamed ``load_dataset``."""
     if rows is not None:
         return rows
-    from datasets import load_dataset  # pragma: no cover - integration path (needs the datasets pkg + network)
+    from datasets import (
+        load_dataset,  # pragma: no cover - integration path (needs the datasets pkg + network)
+    )
 
     args = (repo, config) if config else (repo,)  # pragma: no cover
     return load_dataset(*args, split=split, streaming=True)  # pragma: no cover

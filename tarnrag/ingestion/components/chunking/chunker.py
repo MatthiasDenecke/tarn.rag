@@ -14,11 +14,17 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from bausatz import Component
 from pydantic import BaseModel
 
-from tarnrag.contracts import Annotation, ChunkProvenance, Element, Span, StructuredDocument
+from tarnrag.contracts import (
+    Annotation,
+    ChunkProvenance,
+    Element,
+    Span,
+    StructuredDocument,
+)
 from tarnrag.core.hashing import compute_content_hash
-from bausatz import Component
 
 
 class Chunker(Component):

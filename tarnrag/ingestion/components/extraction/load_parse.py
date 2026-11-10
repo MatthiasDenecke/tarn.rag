@@ -21,10 +21,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
+from bausatz import ComponentFactory
 from pydantic import Field
 
 from tarnrag.contracts import PipelineItem
-from bausatz import ComponentFactory
 from tarnrag.ingestion.components.extraction.extractor import Extractor, Source
 from tarnrag.ingestion.components.extraction.html import HtmlExtractor
 from tarnrag.ingestion.components.extraction.markdown import MarkdownExtractor
