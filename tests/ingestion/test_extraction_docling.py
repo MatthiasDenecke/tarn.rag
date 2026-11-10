@@ -54,13 +54,13 @@ def test_mapping_headings_paragraph_geometry_and_header_path():
 
 @requires_docling_core
 def test_mapping_table_cells_geometry_and_header_addressing():
+    from docling_core.types.doc.base import BoundingBox, CoordOrigin
     from docling_core.types.doc.document import (
         DoclingDocument,
         ProvenanceItem,
         TableCell,
         TableData,
     )
-    from docling_core.types.doc.base import BoundingBox, CoordOrigin
 
     def bb(box):
         return BoundingBox(l=box[0], t=box[1], r=box[2], b=box[3], coord_origin=CoordOrigin.TOPLEFT)

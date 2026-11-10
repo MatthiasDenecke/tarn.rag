@@ -15,8 +15,18 @@ from tarnrag.contracts.dtos import (
     PipelineItem,
 )
 from tarnrag.contracts.index_meta import IndexMeta
-from tarnrag.contracts.ports import ChunkStore, DocumentFactsSource, JobStatusSource, RetrievalStore
-from tarnrag.contracts.results import Candidate, ChunkFilter, ChunkRecord, RetrievalResult
+from tarnrag.contracts.ports import (
+    ChunkStore,
+    DocumentFactsSource,
+    JobStatusSource,
+    RetrievalStore,
+)
+from tarnrag.contracts.results import (
+    Candidate,
+    ChunkFilter,
+    ChunkRecord,
+    RetrievalResult,
+)
 from tarnrag.contracts.structure import (
     Annotation,
     ChunkProvenance,
@@ -31,35 +41,35 @@ from tarnrag.contracts.structure import (
 )
 
 __all__ = [
-    # dtos
-    "PipelineItem",
-    "Document",
-    "Chunk",
-    "Embedding",
-    "DocumentFacts",
-    "CorpusStatus",
-    "MethodRef",
-    # structure (layout-aware extraction)
-    "StructuredDocument",
-    "Element",
-    "ElementKind",
-    "Table",
-    "TableCell",
     "Annotation",
-    "Span",
-    "PageBox",
-    "Geometry",
-    "ChunkProvenance",
-    # ports
-    "ChunkStore",
-    "RetrievalStore",
-    "DocumentFactsSource",
-    "JobStatusSource",
     # results
     "Candidate",
+    "Chunk",
     "ChunkFilter",
+    "ChunkProvenance",
     "ChunkRecord",
-    "RetrievalResult",
+    # ports
+    "ChunkStore",
+    "CorpusStatus",
+    "Document",
+    "DocumentFacts",
+    "DocumentFactsSource",
+    "Element",
+    "ElementKind",
+    "Embedding",
+    "Geometry",
     # index_meta
     "IndexMeta",
+    "JobStatusSource",
+    "MethodRef",
+    "PageBox",
+    # dtos
+    "PipelineItem",
+    "RetrievalResult",
+    "RetrievalStore",
+    "Span",
+    # structure (layout-aware extraction)
+    "StructuredDocument",
+    "Table",
+    "TableCell",
 ]

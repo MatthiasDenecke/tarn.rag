@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from tarnrag.contracts import Annotation, Candidate, ChunkFilter, MethodRef, RetrievalResult
+from tarnrag.contracts import (
+    Annotation,
+    Candidate,
+    ChunkFilter,
+    MethodRef,
+    RetrievalResult,
+)
 
 
 class Purpose(str, Enum):

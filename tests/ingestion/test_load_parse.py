@@ -1,9 +1,9 @@
 """LoadAndParseStage: config-driven extractor routing -> a StructuredDocument on item.document."""
 
 from tarnrag.contracts import ElementKind, PipelineItem
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
-from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
 from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
+from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
 
 
 def _run(item: PipelineItem, **config) -> PipelineItem:

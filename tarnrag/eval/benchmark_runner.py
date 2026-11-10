@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.engine.config import DatabaseSettings, Settings
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.core.resources.llm import LanguageModel
@@ -46,7 +47,7 @@ async def _safe_answer(answer: Awaitable[GenerationResult]) -> GenerationResult:
     logged so a high count is visible (they shouldn't be silently absorbed)."""
     try:
         return await answer
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - one question's failure is scored, not fatal to the sweep
         logger.warning("benchmark answer failed; scoring as empty: %s: %s", type(e).__name__, e)
         return GenerationResult(answer="")
 

@@ -24,9 +24,8 @@ from __future__ import annotations
 
 import asyncio
 
-from tarnrag import DocumentStatus, TarnRag
-
 from examples.common import base_settings, corpus, example_db, require_model
+from tarnrag import DocumentStatus, TarnRag
 
 # The shared corpus this example ingests (examples/docs/corpus-1/*.txt).
 CORPUS = corpus("corpus-1")

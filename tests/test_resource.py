@@ -1,6 +1,7 @@
 """The ``Resource`` base — the embedder/cross-encoder are injected models, siblings of ``Component``."""
 
 from bausatz import Component
+
 from tarnrag.core.engine.config import EmbeddingSettings, RerankSettings
 from tarnrag.core.resources.cross_encoder import CrossEncoder, OnnxCrossEncoder
 from tarnrag.core.resources.embedder import Embedder, OnnxEmbedder

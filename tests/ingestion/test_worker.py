@@ -6,10 +6,10 @@ from tarnrag.contracts import PipelineItem
 from tarnrag.ingestion.engine.batch import BatchContext, BatchCoordinator
 from tarnrag.ingestion.engine.jobs import IngestionJob
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 from tarnrag.ingestion.engine.queue import InMemoryJobQueue
 from tarnrag.ingestion.engine.result_sink import PassthroughSink
 from tarnrag.ingestion.engine.worker import IngestionWorker
+from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
 
 class BoomStage(PipelineStage):

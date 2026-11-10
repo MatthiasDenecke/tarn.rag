@@ -11,7 +11,11 @@ from tarnrag.contracts.structure import Span
 from tarnrag.core.exceptions import RetrievalError
 from tarnrag.core.resources.llm import StaticLanguageModel
 from tarnrag.retrieval.components.reranker import LlmJudgeReranker
-from tarnrag.retrieval.components.retriever import HydeRetriever, MultiQueryRetriever, RetrievalContext
+from tarnrag.retrieval.components.retriever import (
+    HydeRetriever,
+    MultiQueryRetriever,
+    RetrievalContext,
+)
 from tarnrag.retrieval.types import Query
 
 

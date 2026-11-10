@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from bausatz import ComponentFactory
+
 from tarnrag.generation import GenerationContext, GenerationPipeline, GenerationResult
 from tarnrag.retrieval.types import Purpose, Query
 
