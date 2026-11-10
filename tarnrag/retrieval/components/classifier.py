@@ -53,16 +53,18 @@ class QueryClassifier(Component):
         deterministic: bool = True,
     ) -> None:
         """Append one finding by this classifier to ``query.annotations``; ``producer`` is filled in.
-        ``span`` may mark the sub-region of the query text it applies to (char offsets into ``query.text``)."""
-        query.annotations.append(
-            Annotation(
-                producer=self.config.class_name,
-                type=type,
-                value=value,
-                span=span,
-                deterministic=deterministic,
-            )
+        ``span`` may mark the sub-region of the query text it applies to (char offsets into ``query.text``).
+        Idempotent: an identical finding already recorded isn't added again — so nesting routers that run
+        the same classifier (each router classifies; the annotations ride along) doesn't duplicate it."""
+        annotation = Annotation(
+            producer=self.config.class_name,
+            type=type,
+            value=value,
+            span=span,
+            deterministic=deterministic,
         )
+        if annotation not in query.annotations:
+            query.annotations.append(annotation)
 
 
 class GenericQueryClassifier(QueryClassifier):
