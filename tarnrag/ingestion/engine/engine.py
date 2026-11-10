@@ -39,8 +39,6 @@ from tarnrag.core.hashing import sha256_file, sha256_hex
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.ingestion.components.extraction.load_parse import infer_source_kind
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.embed import EmbedStage
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.engine.queue import (
     InMemoryJobQueue,
     JobConsumer,
@@ -50,6 +48,7 @@ from tarnrag.ingestion.engine.queue import (
 from tarnrag.ingestion.engine.result_sink import create_sink_registry
 from tarnrag.ingestion.engine.types import DocumentStatus, DocumentSummary
 from tarnrag.ingestion.engine.worker import IngestionWorker
+from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.storage.repository import DocumentRepository
 from tarnrag.storage.status import DocumentStatusReader
