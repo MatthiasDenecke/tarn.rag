@@ -26,7 +26,7 @@ from tarnrag.generation.components.grounding import GroundingChecker, Verdict
 from tarnrag.generation.components.reasoner import Reasoner, SingleHopReasoner
 from tarnrag.generation.context import GenerationContext
 from tarnrag.generation.types import GenerationResult
-from tarnrag.retrieval.types import Purpose, Query
+from tarnrag.retrieval.types import Query
 
 
 class GenerationPipeline(Component):
@@ -65,11 +65,13 @@ class GenerationPipeline(Component):
 
     async def answer(self, query: Query, ctx: GenerationContext) -> GenerationResult:
         self.ensure_built()
-        # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — whatever
-        # purpose the caller's Query carries. This is the one choke point every generation path (engine,
-        # facade, evals) goes through; the reasoners derive their sub-queries with ``replace``, so the
-        # purpose — and with it the ai_grounding_allowed pre-filter (ModusQ §5.6) — reaches every search.
-        query = replace(query, purpose=Purpose.GENERATION_GROUNDING)
+        # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — on top of
+        # the caller's purpose, never instead of it (``grounds_generation`` requires ai_grounding_allowed and
+        # intersects the purpose's license classes with GENERATION_GROUNDING's, ModusQ §5.6: tighten, never
+        # widen). Every path that runs a GenerationPipeline (engine, facade, the generation evals) goes
+        # through here; the reasoners derive their sub-queries with ``replace``, so the flag reaches every
+        # search. Code that drives a Reasoner directly sets the flag itself (eval.layout.tatqa_numeric does).
+        query = replace(query, grounds_generation=True)
         reasoned = await self._reasoner.reason(query, ctx)
         if reasoned.abstained:  # a gate refused BEFORE the read — surface it; nothing to verify
             return GenerationResult(
