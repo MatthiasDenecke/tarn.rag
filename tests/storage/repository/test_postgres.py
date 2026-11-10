@@ -159,6 +159,15 @@ async def test_delete_cascades(pg_repo):
     assert not (await pg_repo.document_facts("s1")).present
 
 
+async def test_refresh_documents_keeps_chunks_and_vectors(pg_repo):
+    a, _ = await _index(pg_repo)
+    assert await pg_repo.refresh_documents([Document(content="d cleaned", metadata={"source_id": "s1"})]) == ["s1"]
+    assert (await pg_repo.get_document("s1")).content == "d cleaned"
+    facts = await pg_repo.document_facts("s1")
+    assert (facts.chunk_count, facts.embedding_count) == (2, 2)
+    assert [c.chunk_id for c in await pg_repo.sparse_search("tank corrosion", 1)] == [a]
+
+
 async def test_reingest_replaces_chunks(pg_repo):
     await _index(pg_repo)  # two chunks
     # Re-store the same source_id with one chunk -> idempotent replace (not a duplicate).
