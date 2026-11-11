@@ -631,6 +631,13 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         async with self.engine.begin() as conn:
             return await self._delete_job_rows(conn, document_id)
 
+    async def delete_jobs(self, job_ids: list[str]) -> None:
+        """Remove the status rows of specific jobs — ones that never reached the queue."""
+        if not job_ids:
+            return
+        async with self.engine.begin() as conn:
+            await conn.execute(self.job_status.delete().where(self.job_status.c.job_id.in_(job_ids)))
+
     async def document_facts(self, document_id: str) -> DocumentFacts:
         """Persisted-data facts (presence + chunk/embedding counts) for this document."""
         async with self.engine.connect() as conn:
