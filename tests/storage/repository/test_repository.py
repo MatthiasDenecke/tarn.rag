@@ -601,6 +601,21 @@ async def test_index_meta_round_trip(repo):
     assert meta["schema_version"] == "2" and meta["embedding_config_fingerprint"] == "fp-1"
 
 
+def test_chunk_ids_are_a_persisted_contract():
+    """Chunk ids are stored, cited and handed to in-flight Embed jobs, so their derivation must never
+    change: ``uuid5(_CHUNK_ID_NAMESPACE, "<document>\\x1f<ordinal>\\x1f<sha256(content)>")``. A golden
+    value catches an accidental change to the namespace, the key format, or the hash."""
+    import uuid
+
+    from tarnrag.storage.repository.base import _CHUNK_ID_NAMESPACE, DocumentRepository
+
+    chunk = Chunk(parent_doc_id="manual-7", content="Check valve torque weekly.", chunk_index=3)
+    assert DocumentRepository._chunk_id("manual-7", chunk) == "f5f10a66-b5af-5df0-b453-669bc8f718e8"
+    assert _CHUNK_ID_NAMESPACE == uuid.UUID("3f0d1c2a-7b4e-5d6f-8a9b-0c1d2e3f4a5b")
+    key = "manual-7\x1f3\x1f" + _h("Check valve torque weekly.")
+    assert DocumentRepository._chunk_id("manual-7", chunk) == str(uuid.uuid5(_CHUNK_ID_NAMESPACE, key))
+
+
 async def test_store_chunks_is_idempotent_on_retry(repo):
     """HIGH-03: a retried Chunk job (worker died after the commit, before the ack) rewrites the same chunk
     set — same content-addressed ids, no second copy in ``chunks`` or the sparse index."""
