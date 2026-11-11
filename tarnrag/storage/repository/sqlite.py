@@ -13,8 +13,9 @@ Core, for two reasons:
 * The KNN query uses sqlite-vec's proprietary ``MATCH`` operator + synthetic ``distance`` column,
   which has no SQLAlchemy expression.
 
-A few statements that touch only the normal tables (e.g. ``hydrate``'s join, the ``chunk_id``
-lookups) are kept raw too, deliberately, so the whole sqlite-vec/FTS layer reads as one block.
+A few statements that touch only the normal tables (the over-fetch joins, the ``chunk_id``
+subqueries) are kept raw too, deliberately, so the whole sqlite-vec/FTS layer reads as one block.
+``hydrate`` reads only normal tables, so it is shared Core in the base (``ReadAssembler.hydrate``).
 """
 
 from __future__ import annotations
@@ -32,14 +33,13 @@ from tarnrag.contracts import (
     Candidate,
     Chunk,
     ChunkFilter,
-    ChunkRecord,
     Embedding,
     is_retrieval_unit,
 )
-from tarnrag.core.text import looks_like_identifier, quoted_spans
+from tarnrag.core.text import lexical_query
 from tarnrag.storage.repository.base import DocumentRepository
 
-_QUOTED_SPAN = re.compile(r'"[^"]*"')  # strip consumed quoted spans out of the OR remainder
+_WORD = re.compile(r"\w+")  # FTS5 unicode61 splits a phrase into these word pieces
 
 
 class SqliteRepository(DocumentRepository):
@@ -254,65 +254,23 @@ class SqliteRepository(DocumentRepository):
 
     @staticmethod
     def _fts_query(text: str) -> str:
-        """A safe FTS5 ``MATCH`` expression honoring exact-match intent (the same cues the structural
-        classifier labels lexical — ``core.text``):
+        """A safe FTS5 ``MATCH`` expression honoring exact-match intent — the FTS5 rendering of the shared
+        :func:`~tarnrag.core.text.lexical_query` parse (Postgres renders the same parse as a tsquery):
 
         - a double-quoted span is a REQUIRED phrase (tokens adjacent, in order);
         - an identifier whose punctuation splits under unicode61 (``6.4.2``, ``2024-01``, ``§6.4``) is a
           required phrase too — OR-ing its pieces would match them scattered anywhere in a chunk;
-        - everything else stays an OR of quoted tokens (recall-first, exactly as before).
+        - everything else stays an OR of quoted tokens (recall-first).
 
         Required parts are ``AND``-ed with the OR-group (explicit — FTS5's implicit AND only joins bare
         phrases, not a phrase with a parenthesized group); all tokens are quoted so query punctuation
-        can't trip the FTS5 parser. Empty ⇒ no match (caller returns nothing). Plain queries (no quotes,
-        no split identifiers) produce byte-identical expressions to the old builder."""
-        phrases = [
-            " ".join(pieces)
-            for span in quoted_spans(text)
-            if (pieces := re.findall(r"\w+", span.lower()))
-        ]
-        remainder = _QUOTED_SPAN.sub(" ", text)  # quoted spans are consumed — not re-OR-ed
-        or_tokens: list[str] = []
-        for token in remainder.split():
-            pieces = re.findall(r"\w+", token.lower())
-            if len(pieces) > 1 and looks_like_identifier(token):
-                phrases.append(" ".join(pieces))  # split identifier ⇒ adjacency is the meaning
-            else:
-                for piece in pieces:  # dedupe one at a time — a token like 20,000,000 repeats pieces
-                    if piece not in or_tokens:
-                        or_tokens.append(piece)
-        parts = [f'"{p}"' for p in phrases]
-        if or_tokens:
-            group = " OR ".join(f'"{t}"' for t in or_tokens)
+        can't trip the FTS5 parser. Empty ⇒ no match (caller returns nothing)."""
+        parsed = lexical_query(text)
+        parts = [f'"{" ".join(_WORD.findall(phrase.lower()))}"' for phrase in parsed.phrases]
+        if parsed.terms:
+            group = " OR ".join(f'"{t}"' for t in parsed.terms)
             parts.append(f"({group})" if parts else group)
         return " AND ".join(parts)
-
-    async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
-        """
-        Canonical text + provenance for the given chunk ids, preserving input order.
-        """
-        if not chunk_ids:
-            return []
-        marks = ",".join("?" * len(chunk_ids))
-        async with self.engine.connect() as conn:
-            rows = (
-                await conn.exec_driver_sql(
-                    "SELECT c.chunk_id, c.text, c.document_id, d.source_kind, d.standard_id, "
-                    "c.locator, c.license_class, c.ai_grounding_allowed, c.available FROM chunks c "
-                    "JOIN documents d ON c.document_id = d.document_id "
-                    f"WHERE c.chunk_id IN ({marks})",
-                    tuple(chunk_ids),
-                )
-            ).fetchall()
-            by_id = {r[0]: r for r in rows}
-            prov = await self.reads.chunk_provenance(conn, chunk_ids)
-            methods = await self.reads.methods_by_chunk(conn, chunk_ids)  # one query, not one per chunk
-            records = [
-                self.reads.create_chunk_record(r, methods.get(cid, []), prov.get(cid))
-                for cid in chunk_ids
-                if (r := by_id.get(cid)) is not None
-            ]
-        return records
 
     # ----- §8 search-index hooks (vec0 + FTS5 live outside the FK graph) -----
 
@@ -326,19 +284,14 @@ class SqliteRepository(DocumentRepository):
             await conn.exec_driver_sql("INSERT INTO fts_chunks(chunk_id, text) VALUES (?, ?)", rows)
 
     async def _clear_chunk_index(self, conn: AsyncConnection, document_id: str) -> None:
-        old = [
-            r[0]
-            for r in (
-                await conn.exec_driver_sql(
-                    "SELECT chunk_id FROM chunks WHERE document_id = ?", (document_id,)
-                )
-            ).fetchall()
-        ]
-        if not old:
-            return
-        marks = ",".join("?" * len(old))
-        await conn.exec_driver_sql(f"DELETE FROM vec_chunks WHERE chunk_id IN ({marks})", tuple(old))
-        await conn.exec_driver_sql(f"DELETE FROM fts_chunks WHERE chunk_id IN ({marks})", tuple(old))
+        # A subquery, not an expanded id list: one bind parameter however many chunks the document has
+        # (an IN list of every chunk id hits SQLITE_MAX_VARIABLE_NUMBER on a large enough document).
+        for table in ("vec_chunks", "fts_chunks"):
+            await conn.exec_driver_sql(
+                f"DELETE FROM {table} WHERE chunk_id IN "
+                "(SELECT chunk_id FROM chunks WHERE document_id = ?)",
+                (document_id,),
+            )
 
     async def _count_doc_embeddings(self, conn: AsyncConnection, document_id: str) -> int:
         row = (

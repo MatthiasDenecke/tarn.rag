@@ -161,9 +161,11 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   `_encode_vector` / `_decode_vector`, `_dialect_insert` (the `ON CONFLICT` upsert construct),
   `_before_create_schema` / `_after_create_schema`,
   `_index_chunk_text`, `_clear_chunk_index`, `_count_doc_embeddings`,
-  `_embedding_counts_by_document` — plus the `RetrievalStore` port (`dense_knn` / `sparse_search` /
-  `hydrate`). Postgres uses pgvector; SQLite uses sqlite-vec (`vec_chunks`) for dense
-  KNN + FTS5 for sparse. Selection is driven by `settings.database.document_url` (a `postgres` substring
+  `_embedding_counts_by_document` — plus the search half of the `RetrievalStore` port (`dense_knn` /
+  `sparse_search`; `hydrate` is shared Core in the base). Postgres uses pgvector; SQLite uses sqlite-vec
+  (`vec_chunks`) for dense KNN + FTS5 for sparse. Both sparse builders render one parse
+  (`core.text.lexical_query`: required phrases AND an OR of the remaining terms), so the dialects agree
+  on what a query means. Selection is driven by `settings.database.document_url` (a `postgres` substring
   → Postgres, else SQLite). Put shared logic in the base, dialect specifics in the hooks.
 - **Transactional guarantees & idempotency.** `store_document_with_chunks` / `store_chunks` /
   `store_embeddings` are atomic. Documents are keyed by `metadata['source_id']` (UNIQUE, **stable** —

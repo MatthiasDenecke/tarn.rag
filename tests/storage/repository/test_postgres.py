@@ -192,3 +192,21 @@ async def test_concurrent_upserts_of_one_key_never_collide(pg_repo):
         results = await asyncio.gather(*meta, *docs, return_exceptions=True)
         assert not [r for r in results if isinstance(r, Exception)]
     assert len(await pg_repo.index_meta()) == 5
+
+
+async def test_sparse_is_recall_first_like_sqlite(pg_repo):
+    """HIGH-05: a natural-language question matches chunks holding only SOME of its words (OR — the
+    SQLite semantics), ranked by how many; a split identifier is still a required adjacent phrase."""
+    _, (rev, other, kit) = await pg_repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s3"}),
+        [
+            Chunk(parent_doc_id="s3", content="Acme revenue grew in 2024", chunk_index=0),
+            Chunk(parent_doc_id="s3", content="revenue recognition policy", chunk_index=1),
+            Chunk(parent_doc_id="s3", content="6 bolts, 4 nuts and 2 washers per torque kit", chunk_index=2),
+        ],
+    )
+    hits = [c.chunk_id for c in await pg_repo.sparse_search("What was the revenue of Acme in 2024?", 5)]
+    assert hits[0] == rev and other in hits  # "what"/"was" appear nowhere — the AND builder found nothing
+    assert await pg_repo.sparse_search("torque 6.4.2", 5) == []  # 6 / 4 / 2 scattered ≠ the identifier
+    assert await pg_repo.sparse_search("!!! ...", 5) == []  # nothing usable ⇒ no query, no error
+    assert kit in [c.chunk_id for c in await pg_repo.sparse_search("torque kit", 5)]
