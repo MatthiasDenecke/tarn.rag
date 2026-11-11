@@ -24,7 +24,8 @@ DATABASE__QUEUE_URL=postgresql://user:password@localhost:5432/tarn_rag_queue    
 ```
 
 Any Postgres URL form works for `DATABASE__DOCUMENT_URL` (`postgresql://`, or the `postgres://` alias
-many hosting providers hand out); the repository always drives it through asyncpg.
+many hosting providers hand out); the repository always drives it through asyncpg. A libpq
+`?sslmode=…` parameter is translated to asyncpg's `ssl=…` (same mode names, e.g. `require`).
 
 `Settings` fails fast on a mismatch: `MODE=distributed` requires a Postgres `document_url` **and** a
 `queue_url`; `MODE=embedded` requires SQLite (it is single-process by design). You cannot silently

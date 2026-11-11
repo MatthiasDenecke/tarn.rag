@@ -661,6 +661,22 @@ def test_postgres_driver_url_pins_asyncpg_for_every_postgres_scheme():
         assert repo._driver_url(url) == "postgresql+asyncpg://u:p@h:5432/db"
 
 
+def test_postgres_driver_url_maps_libpq_sslmode_to_asyncpg_ssl():
+    """A hosted URL's ``?sslmode=require`` would reach ``asyncpg.connect`` as an unknown keyword
+    (``TypeError: ... unexpected keyword argument 'sslmode'``); it becomes ``ssl``, other parameters
+    are kept, and an explicit ``ssl`` wins."""
+    pytest.importorskip("pgvector")
+    from sqlalchemy.engine import make_url
+
+    from tarnrag.storage.repository.postgres import PostgresRepository
+
+    repo = PostgresRepository("postgresql://u:p@h/db", embedding_dimension=3)  # no connection is made
+    query = make_url(repo._driver_url("postgres://u:p@h/db?sslmode=require&application_name=x")).query
+    assert dict(query) == {"ssl": "require", "application_name": "x"}
+    query = make_url(repo._driver_url("postgresql://u:p@h/db?sslmode=require&ssl=verify-full")).query
+    assert dict(query) == {"ssl": "verify-full"}
+
+
 async def test_hydrate_reads_the_chunks_table_once(repo):
     """MED-08: text, licensing and provenance come back from ONE ``chunks`` query (the provenance columns
     ride along) — not a second ``chunks`` round trip for the provenance."""
