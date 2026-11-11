@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tarnrag.contracts import Embedding, PipelineItem
+from tarnrag.contracts import Embedding, PipelineItem, is_retrieval_unit
 from tarnrag.core.engine.config import EmbeddingSettings
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
@@ -29,7 +29,9 @@ class EmbedStage(PipelineStage):
     """
     Terminal stage: yields ``Embedding``s (not ``PipelineItem``s). ``process_batch`` groups items
     into ``embedding.batch_size``-sized embed calls; ``chunk_id`` comes from
-    ``metadata['chunk_id']`` (set by ChunkResultSink).
+    ``metadata['chunk_id']`` (set by ChunkResultSink). Only **retrieval units** are embedded: a section
+    parent (``provenance.level > 0``) is stored for the auto-merger to hydrate, never searched, so it gets
+    no vector (its text is its leaves' text again — embedding it would only crowd the index).
     """
 
     class Config(PipelineStage.Config):
@@ -43,6 +45,11 @@ class EmbedStage(PipelineStage):
         super().__init__(config)
         self._embedder = None  # lazy; built on first use (or injected by tests)
 
+    def accepts(self, item: PipelineItem) -> bool:
+        """Only retrieval units get a vector — the orchestrator never enqueues an Embed job for a section
+        parent."""
+        return is_retrieval_unit(item.provenance)
+
     def process(self, item: PipelineItem) -> Iterator[Embedding]:
         yield from self.process_batch([item])
 
@@ -51,6 +58,9 @@ class EmbedStage(PipelineStage):
         Embed items in ``embedding.batch_size`` groups, yielding one ``Embedding`` per chunk
         (``chunk_id`` taken from ``metadata['chunk_id']``).
         """
+        items = [it for it in items if self.accepts(it)]  # also when called directly, not via a job
+        if not items:
+            return
         embedder = self._get_embedder()
         embedding = self.config.embedding
         batch_size = embedding.batch_size

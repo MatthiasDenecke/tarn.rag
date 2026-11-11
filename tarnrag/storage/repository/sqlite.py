@@ -27,7 +27,14 @@ import sqlite_vec
 from sqlalchemy import Text, event
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from tarnrag.contracts import Candidate, Chunk, ChunkFilter, ChunkRecord, Embedding
+from tarnrag.contracts import (
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    ChunkRecord,
+    Embedding,
+    is_retrieval_unit,
+)
 from tarnrag.core.text import looks_like_identifier, quoted_spans
 from tarnrag.storage.repository.base import DocumentRepository
 
@@ -147,25 +154,13 @@ class SqliteRepository(DocumentRepository):
         """
         Exact KNN over ``vec_chunks`` (sqlite-vec), nearest first. Raw SQL: ``MATCH`` and the
         synthetic ``distance`` column are sqlite-vec's proprietary query API (see module docstring).
-        With a ``filter`` the result is the ``k`` nearest *permitted* chunks: sqlite-vec picks its k
-        nearest before a join can filter, so we over-fetch a window, join ``chunks`` to drop disallowed
-        rows, and backfill (``_overfetch``, ModusQ §5.4).
+        The result is the ``k`` nearest *retrieval units* (leaf chunks, ``level = 0``) that pass
+        ``filter``: sqlite-vec picks its k nearest before a join can filter, so we over-fetch a window,
+        join ``chunks`` to drop the rest, and backfill (``_overfetch``, ModusQ §5.4). The leaf predicate
+        also holds for an index built before section parents stopped being embedded.
         """
         q = sqlite_vec.serialize_float32(query_vec)
-        if filter is None:
-            async with self.engine.connect() as conn:
-                rows = (
-                    await conn.exec_driver_sql(
-                        "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? "
-                        "ORDER BY distance LIMIT ?",
-                        (q, k),
-                    )
-                ).fetchall()
-            return [
-                Candidate(chunk_id=cid, rank=i + 1, raw_score=dist)
-                for i, (cid, dist) in enumerate(rows)
-            ]
-        where, params = self._chunk_filter_sql(filter, "c")
+        where, params = self._search_where(filter, "c")
         async with self.engine.connect() as conn:
             total = (await conn.exec_driver_sql("SELECT count(*) FROM vec_chunks")).fetchone()[0]
 
@@ -187,25 +182,12 @@ class SqliteRepository(DocumentRepository):
     ) -> list[Candidate]:
         """§8 sparse retrieval over FTS5 ``fts_chunks`` (BM25, best first). Raw SQL: ``MATCH`` + the
         ``bm25()`` rank are FTS5's query API. ``raw_score`` is the FTS5 BM25 value (lower = better).
-        A ``filter`` is applied as in :meth:`dense_knn` (over-fetch the top window, join ``chunks``, keep
-        permitted rows, backfill)."""
+        Restricted to retrieval units and ``filter`` as in :meth:`dense_knn` (over-fetch the top window,
+        join ``chunks``, keep the permitted leaves, backfill)."""
         match = self._fts_query(query_text)
         if not match:
             return []
-        if filter is None:
-            async with self.engine.connect() as conn:
-                rows = (
-                    await conn.exec_driver_sql(
-                        "SELECT chunk_id, bm25(fts_chunks) AS score FROM fts_chunks "
-                        "WHERE fts_chunks MATCH ? ORDER BY score LIMIT ?",
-                        (match, k),
-                    )
-                ).fetchall()
-            return [
-                Candidate(chunk_id=cid, rank=i + 1, raw_score=score)
-                for i, (cid, score) in enumerate(rows)
-            ]
-        where, params = self._chunk_filter_sql(filter, "c")
+        where, params = self._search_where(filter, "c")
         async with self.engine.connect() as conn:
             total = (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0]
 
@@ -222,6 +204,13 @@ class SqliteRepository(DocumentRepository):
                 ).fetchall()
 
             return await self._overfetch(k, total, page)
+
+    @classmethod
+    def _search_where(cls, filter: ChunkFilter | None, alias: str) -> tuple[str, list]:
+        """The full search predicate over the joined ``chunks`` row: retrieval units only (a section
+        parent is hydrated, never searched) AND, when given, the permitted-chunk ``filter``."""
+        where, params = cls._chunk_filter_sql(filter, alias) if filter is not None else ("1", [])
+        return f"{alias}.level = 0 AND ({where})", params
 
     @staticmethod
     def _chunk_filter_sql(filter: ChunkFilter, alias: str) -> tuple[str, list]:
@@ -326,7 +315,9 @@ class SqliteRepository(DocumentRepository):
     async def _index_chunk_text(
         self, conn: AsyncConnection, ids: list[str], chunks: list[Chunk]
     ) -> None:
-        rows = [(cid, ch.content) for cid, ch in zip(ids, chunks)]
+        # Only retrieval units go into the sparse index — a section parent is hydrated, never searched
+        # (indexing its text again would also skew BM25's document frequencies).
+        rows = [(cid, ch.content) for cid, ch in zip(ids, chunks) if is_retrieval_unit(ch.provenance)]
         if rows:
             await conn.exec_driver_sql("INSERT INTO fts_chunks(chunk_id, text) VALUES (?, ?)", rows)
 

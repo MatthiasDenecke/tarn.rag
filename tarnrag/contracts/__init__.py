@@ -38,6 +38,7 @@ from tarnrag.contracts.structure import (
     StructuredDocument,
     Table,
     TableCell,
+    is_retrieval_unit,
 )
 
 __all__ = [
@@ -67,4 +68,5 @@ __all__ = [
     "StructuredDocument",
     "Table",
     "TableCell",
+    "is_retrieval_unit",
 ]

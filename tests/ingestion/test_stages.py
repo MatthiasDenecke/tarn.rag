@@ -89,6 +89,19 @@ def test_embed_produces_embeddings_with_model_batching():
     assert len(stage._embedder.calls) == 2
 
 
+def test_embed_skips_section_parents_even_when_handed_them_directly():
+    """The orchestrator never enqueues a parent for Embed (``accepts``); a direct call drops it too."""
+    stage = EmbedStage(EmbedStage.Config())
+    stage._embedder = _FakeEmbedder()
+    leaf = PipelineItem(content="leaf", metadata={"chunk_id": "c0"}, provenance=ChunkProvenance(content_hash="l"))
+    parent = PipelineItem(
+        content="section", metadata={"chunk_id": "p"}, provenance=ChunkProvenance(content_hash="p", level=1)
+    )
+    assert stage.accepts(leaf) and stage.accepts(_item("no provenance")) and not stage.accepts(parent)
+    assert [e.chunk_id for e in stage.process_batch([parent, leaf])] == ["c0"]
+    assert list(stage.process_batch([parent])) == [] and stage._embedder.calls == [["leaf"]]
+
+
 def test_embed_injects_header_path_when_enabled():
     """inject_header_path prepends the chunk's section header path to its text before embedding;
     queries are never injected and a chunk with no header path is embedded as-is."""

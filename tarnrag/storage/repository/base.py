@@ -379,6 +379,14 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
                 ids.append(doc_id)
             return ids
 
+    async def refresh_documents(self, docs: list[Document]) -> list[str]:
+        """Upsert the document rows (content + provenance columns) in one transaction, **without** the
+        chunk/index replacement ``store_documents`` does. Safe to replay: a re-ingest's replacement already
+        happened when ``LoadAndParse`` stored the document, so whatever chunks exist by now index this
+        document's (deterministically) cleaned text."""
+        async with self.engine.begin() as conn:
+            return [await self._upsert_document(conn, self._doc_values(doc)) for doc in docs]
+
     async def store_document_with_chunks(
         self, doc: Document, chunks: list[Chunk]
     ) -> tuple[str, list[str]]:
@@ -608,15 +616,15 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             ).first() is not None
             if not present:
                 return DocumentFacts(present=False, chunk_count=0, embedding_count=0)
-            chunk_count = (
+            chunk_count, leaf_count = (
                 await conn.execute(
-                    select(func.count())
+                    select(func.count(), func.count().filter(self.chunks.c.level == 0))
                     .select_from(self.chunks)
                     .where(self.chunks.c.document_id == document_id)
                 )
-            ).scalar_one()
+            ).one()
             embedding_count = await self._count_doc_embeddings(conn, document_id)
-        return DocumentFacts(True, chunk_count, embedding_count)
+        return DocumentFacts(True, chunk_count, embedding_count, leaf_count)
 
     async def corpus_stats(self) -> CorpusStatus:
         """A whole-repository snapshot: document / chunk / embedding counts plus the distribution of

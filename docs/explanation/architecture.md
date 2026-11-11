@@ -84,9 +84,23 @@ SQLAlchemy 2.0 Core with dialect-specific behavior isolated to hooks, so the two
 behaviorally identical. The SQLite file is deliberately portable — a future C++ reader can open it
 directly.
 
+The structure-aware chunker emits a section tree: **leaf** chunks are the retrieval units (embedded,
+BM25-indexed, searched), while **section parents** are stored only so the auto-merger can swap a group
+of retrieved siblings for their whole section. A parent is never searched itself, so a section and its
+own fragments can't both reach the reader. A parent also gets no Embed job, so a sectioned document
+shows fewer embeddings than chunks.
+
+> **Upgrading an index built before leaf-only retrieval:** its section parents still have vectors and
+> BM25 rows. Searches already skip them (the `level = 0` predicate), but those rows keep skewing the
+> sparse index's document frequencies until the document is re-ingested. Re-ingest to refresh the
+> BM25 statistics.
+
 Writes are transactional and idempotent: documents are keyed by a **stable** `source_id`, and
 re-ingesting replaces chunks and embeddings rather than duplicating them. Identity (`ID_POLICY`) is
-separate from content — every document also stores a `content_hash` for dedup queries.
+separate from content — every document also stores a `content_hash` for dedup queries. The stored
+`documents.content` is the **cleaned** text (line endings, control characters and whitespace runs
+normalized; code and tables verbatim), because that's the text every chunk's char spans index into.
+The `content_hash` is still computed over the bytes you submitted.
 
 ## One embedder, fingerprinted
 
