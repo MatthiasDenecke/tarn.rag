@@ -102,6 +102,16 @@ separate from content — every document also stores a `content_hash` for dedup 
 normalized; code and tables verbatim), because that's the text every chunk's char spans index into.
 The `content_hash` is still computed over the bytes you submitted.
 
+Chunk ids are **content-addressed**: a `uuid5` of the document id, the chunk's position and the hash of
+its text. A retried Chunk job therefore reproduces the ids its first attempt handed to the Embed jobs,
+and `store_chunks` **replaces** a document's chunks instead of appending to them. A re-ingest that
+changes a chunk's text gives that chunk a new id, so a citation to the old text can't silently resolve
+to the new one. Chunks in an index built before content-addressed ids keep their random ids until
+their document is re-ingested; nothing depends on the difference.
+
+A `source_id` repeated within one ingest call is ingested once, from its last occurrence. In embedded
+mode, concurrent ingest calls run one after the other, so two runs of one document never overlap.
+
 ## One embedder, fingerprinted
 
 The same embedder embeds passages at ingest time and queries at search time — vectors are only
