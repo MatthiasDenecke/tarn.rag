@@ -40,7 +40,8 @@ class ChunkStore(ABC):
 
     @abstractmethod
     async def store_chunks(self, chunks: list[Chunk]) -> list[str]:
-        """Persist chunks atomically; return their ids (in order)."""
+        """Persist chunks atomically, replacing any chunks their documents already hold (idempotent
+        on retry); return their ids (in order)."""
 
     @abstractmethod
     async def store_embeddings(self, embeddings: list[Embedding]) -> list[str]:

@@ -88,8 +88,8 @@ class IngestionEngine(Engine):
         self._auto_drain = auto_drain
         self._debug = debug
         self._id_policy = id_policy
-        # Serializes the embedded drain: two concurrent ingest() calls would otherwise interleave two
-        # run() loops over the one queue (splitting waves/batches arbitrarily between them).
+        # Serializes embedded submissions (enqueue + drain, see ``_submit``): two concurrent ingest() calls
+        # would otherwise interleave two run() loops over the one queue, or mix two runs into one wave.
         self._drain_lock = asyncio.Lock()
 
     # ----- construction -----
@@ -367,16 +367,22 @@ class IngestionEngine(Engine):
             )
 
     async def _submit(self, items: list[PipelineItem]) -> list[str]:
+        if not (self._auto_drain and isinstance(self._queue, JobConsumer)):
+            return await self._enqueue_documents(items)  # distributed: the workers process them
+        # Embedded: process the whole DAG in-process, one submission at a time. The lock covers the
+        # enqueue as well as the drain, so a concurrent ingest waits for this one to finish instead of
+        # adding its jobs to the running waves. Otherwise two runs of one document could share a batch
+        # (two chunk sets in one store_chunks call), and its job-history clear would wipe a run in flight.
+        async with self._drain_lock:
+            document_ids = await self._enqueue_documents(items)
+            await self._queue.run()
+        return document_ids
+
+    async def _enqueue_documents(self, items: list[PipelineItem]) -> list[str]:
         document_ids = await self.orchestrator.ingest_documents(items)
         if self.obs:
             self.obs.counter("ingestion.documents_queued", len(items))
             await self.obs.log("info", "documents queued", count=len(document_ids))
-        if self._auto_drain and isinstance(self._queue, JobConsumer):
-            # Embedded: process the whole DAG in-process. Single-flight (the lock): a concurrent ingest
-            # waits rather than starting a second run() loop over the one queue; if the first loop already
-            # drained the second call's jobs (enqueued above), its run() finds an empty queue and returns.
-            async with self._drain_lock:
-                await self._queue.run()
         return document_ids
 
     def _item(self, source_id: str, content: str, extra: dict[str, Any]) -> PipelineItem:

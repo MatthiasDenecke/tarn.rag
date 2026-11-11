@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import and_, false, func, or_, select, true
+from sqlalchemy import Table, and_, false, func, or_, select, true
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -33,6 +34,9 @@ class PostgresRepository(DocumentRepository):
     def _decode_vector(self, stored) -> list[float]:
         return list(stored)
 
+    def _dialect_insert(self, table: Table):
+        return pg_insert(table)
+
     _IVFFLAT_LISTS = 100  # ivfflat partition count; the filtered path sets probes = this for full recall
 
     async def _before_create_schema(self, conn: AsyncConnection) -> None:
@@ -55,8 +59,6 @@ class PostgresRepository(DocumentRepository):
         ``INSERT OR REPLACE`` into ``vec_chunks``). Returns the chunk ids written."""
         if not embeddings:
             return []
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-
         rows = [
             {"chunk_id": e.chunk_id, "vector": self._encode_vector(e.vector)} for e in embeddings
         ]

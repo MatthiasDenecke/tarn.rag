@@ -158,7 +158,8 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   `DocumentRepository` (SQLAlchemy 2.0 Core, async): shared tables + dialect-agnostic CRUD in
   `base.py` (read-model assembly lives in its companion `read_assembly.py`, held as `repo.reads`);
   `postgres.py` / `sqlite.py` supply only the dialect hooks — `_driver_url`, `_vector_type`,
-  `_encode_vector` / `_decode_vector`, `_before_create_schema` / `_after_create_schema`,
+  `_encode_vector` / `_decode_vector`, `_dialect_insert` (the `ON CONFLICT` upsert construct),
+  `_before_create_schema` / `_after_create_schema`,
   `_index_chunk_text`, `_clear_chunk_index`, `_count_doc_embeddings`,
   `_embedding_counts_by_document` — plus the `RetrievalStore` port (`dense_knn` / `sparse_search` /
   `hydrate`). Postgres uses pgvector; SQLite uses sqlite-vec (`vec_chunks`) for dense
@@ -167,7 +168,10 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
 - **Transactional guarantees & idempotency.** `store_document_with_chunks` / `store_chunks` /
   `store_embeddings` are atomic. Documents are keyed by `metadata['source_id']` (UNIQUE, **stable** —
   set per `ID_POLICY` = `uuid` | `caller`); re-ingesting upserts the document and replaces its
-  chunks/embeddings (delete chunks → cascade removes embeddings) — re-runs never duplicate. Each
+  chunks/embeddings (delete chunks → cascade removes embeddings) — re-runs never duplicate.
+  `store_chunks` likewise replaces a document's chunks (a retried Chunk job can't add a second set), chunk
+  ids are content-addressed (`uuid5(document, ordinal, content hash)`), and every upsert is one atomic
+  `INSERT … ON CONFLICT DO UPDATE` (no update-then-insert race between concurrent workers). Each
   document also stores a `content_hash` column (sha256 of submitted content); `find_by_content_hash`
   queries it for content dedup, independent of identity. `list_documents` (inventory + counts) and
   `delete_document` round out the document admin surface; `delete_document_jobs` clears the

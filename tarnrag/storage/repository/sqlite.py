@@ -24,7 +24,8 @@ import re
 from pathlib import Path
 
 import sqlite_vec
-from sqlalchemy import Text, event
+from sqlalchemy import Table, Text, event
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from tarnrag.contracts import (
@@ -132,6 +133,9 @@ class SqliteRepository(DocumentRepository):
 
     def _decode_vector(self, stored) -> list[float]:
         return json.loads(stored)
+
+    def _dialect_insert(self, table: Table):
+        return sqlite_insert(table)
 
     async def store_embeddings(self, embeddings: list[Embedding]) -> list[str]:
         """

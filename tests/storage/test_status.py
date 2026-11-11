@@ -58,3 +58,11 @@ async def test_complete_once_every_leaf_is_embedded():
     """Section parents get no vector, so completeness is measured against the leaves (``leaf_count``)."""
     s = await _reader(DocumentFacts(True, 5, 3, leaf_count=3), [{"status": "completed"}]).document_status("d")
     assert s["status"] == "complete" and s["chunk_count"] == 5  # all chunks still reported
+
+
+async def test_in_progress_while_a_reingest_is_queued_over_complete_data():
+    """HIGH-02: the old data is complete, but a new ingest is queued — don't report 'complete' yet."""
+    for state in ("queued", "processing"):
+        rows = [{"status": "completed"}, {"status": state}]
+        s = await _reader(DocumentFacts(True, 3, 3), rows).document_status("d")
+        assert s["status"] == "in_progress", state
