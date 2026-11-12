@@ -60,6 +60,21 @@ mid-job is recovered separately: its heartbeat goes stale and another worker pic
 Downstream jobs are only enqueued after upstream results are persisted, and every write is idempotent,
 so a retry never duplicates work.
 
+### Sizing `WORKER__CONCURRENCY`
+
+- **Local ONNX embedding is already parallel.** ONNX Runtime sizes its thread pool to every core, so
+  one Embed batch keeps the machine busy on its own. At `WORKER__CONCURRENCY=4`, four of them compete
+  for the same cores: about four times as many runnable threads as cores, for little extra throughput.
+  For workers that embed locally, keep concurrency at 1–2 and add worker processes or hosts to scale.
+  Higher values pay off when stages mostly wait, as with an embedding API.
+- **Docling extractions take turns.** With the opt-in `docling` extractor, one worker process converts
+  one PDF at a time, whatever the concurrency, because docling doesn't promise that one converter is
+  safe to share between threads. Docling spreads each conversion over several threads itself.
+- **A single-slot worker holds one job in reserve.** pgQueuer requires a worker to allow at least twice
+  as many in-flight jobs as it claims per poll. So at `WORKER__CONCURRENCY=1` a worker claims 2 jobs and
+  runs 1, and the second waits, claimed, until the first finishes; no other worker can take it
+  meanwhile. Higher concurrency claims no more jobs than it runs.
+
 ## Notes
 
 - Retrieval and generation read the Postgres store directly; only ingestion is queued.
