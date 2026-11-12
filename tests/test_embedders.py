@@ -8,6 +8,9 @@ mock-transport tests ``importorskip`` it; the pooling / selector / fingerprint t
 """
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -122,6 +125,30 @@ def test_openai_full_http_path():
     assert cap["headers"]["authorization"] == "Bearer sk-test"  # the key reached the real request
     assert cap["body"] == {"model": "text-embedding-3-small", "input": ["a", "b"], "dimensions": 2}
     assert vecs == [[1.0, 0.0], [0.0, 1.0]]  # index-sorted, then L2-normalized
+
+
+def test_concurrent_first_calls_build_one_http_client(monkeypatch):
+    """Ingestion embeds in worker threads, so the first calls can race the lazy client build; they must
+    share one client rather than leak the others."""
+    httpx = pytest.importorskip("httpx")
+    built = []
+
+    class SlowClient:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+            time.sleep(0.05)  # wide enough for every thread to reach the check
+
+    monkeypatch.setattr(httpx, "Client", SlowClient)
+    e = OpenAIEmbedder(model="text-embedding-3-small", embedding_dim=2, api_key="sk-test")
+    start = threading.Barrier(4)
+
+    def first_call(_):
+        start.wait()
+        return e._http()
+
+    with ThreadPoolExecutor(4) as pool:
+        clients = list(pool.map(first_call, range(4)))
+    assert len(built) == 1 and all(c is clients[0] for c in clients)
 
 
 def test_voyage_full_http_path():

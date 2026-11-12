@@ -14,6 +14,7 @@ by stubbing the one ``_post`` seam — the same honest gating as the ONNX model 
 from __future__ import annotations
 
 import os
+import threading
 from abc import abstractmethod
 from typing import Any
 
@@ -47,6 +48,7 @@ class _ApiEmbedder(Embedder):
         self.batch_size = batch_size
         self.timeout = timeout
         self._client = None
+        self._client_lock = threading.Lock()  # first embeds can arrive from several worker threads at once
 
     @classmethod
     def create(cls, embedding: EmbeddingSettings, embedding_dimension: int) -> _ApiEmbedder:
@@ -119,14 +121,18 @@ class _ApiEmbedder(Embedder):
         return key
 
     def _http(self):
+        """The shared ``httpx.Client`` (thread-safe once built), built once even when the first calls race."""
         if self._client is None:
-            try:
-                import httpx
-            except ImportError as e:  # pragma: no cover - exercised only without the extra
-                raise RuntimeError(
-                    "API embedders need httpx — install the 'embeddings-api' extra (pip install '.[embeddings-api]')"
-                ) from e
-            self._client = httpx.Client(timeout=self.timeout)
+            with self._client_lock:
+                if self._client is None:
+                    try:
+                        import httpx
+                    except ImportError as e:  # pragma: no cover - exercised only without the extra
+                        raise RuntimeError(
+                            "API embedders need httpx — install the 'embeddings-api' extra "
+                            "(pip install '.[embeddings-api]')"
+                        ) from e
+                    self._client = httpx.Client(timeout=self.timeout)
         return self._client
 
     def _post(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
