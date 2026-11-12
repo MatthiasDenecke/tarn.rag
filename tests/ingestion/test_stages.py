@@ -1,3 +1,7 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from bausatz import ComponentFactory
 from pydantic import ValidationError
@@ -100,6 +104,31 @@ def test_embed_skips_section_parents_even_when_handed_them_directly():
     assert stage.accepts(leaf) and stage.accepts(_item("no provenance")) and not stage.accepts(parent)
     assert [e.chunk_id for e in stage.process_batch([parent, leaf])] == ["c0"]
     assert list(stage.process_batch([parent])) == [] and stage._embedder.calls == [["leaf"]]
+
+
+def test_concurrent_first_embed_batches_build_one_embedder(monkeypatch):
+    """A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once, so its first Embed
+    batches all reach the lazy build together. They must share one embedder (one copy of the model)."""
+    from tarnrag.core.resources.embedder import Embedder
+
+    builds = []
+
+    def slow_create(embedding, embedding_dimension):
+        builds.append(threading.get_ident())
+        time.sleep(0.05)  # a model load: long enough for every thread to reach the check
+        return _FakeEmbedder()
+
+    monkeypatch.setattr(Embedder, "create", staticmethod(slow_create))
+    stage = EmbedStage(EmbedStage.Config())
+    start = threading.Barrier(4)
+
+    def first_batch(i):
+        start.wait()
+        return [e.chunk_id for e in stage.process_batch([_item(f"chunk {i}", chunk_id=f"c{i}")])]
+
+    with ThreadPoolExecutor(4) as pool:
+        assert list(pool.map(first_batch, range(4))) == [["c0"], ["c1"], ["c2"], ["c3"]]
+    assert len(builds) == 1
 
 
 def test_embed_injects_header_path_when_enabled():
