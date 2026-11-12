@@ -18,6 +18,7 @@ injected index won't ``open()`` with a non-injecting embedder; the two are compa
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from typing import Literal
 
@@ -48,6 +49,9 @@ class EmbedStage(PipelineStage):
         super().__init__(config)
         self._embedder = None  # lazy; built on first use (or bound / injected)
         self._owns_embedder = False  # True only for the one _get_embedder built itself
+        # A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once, so its first Embed
+        # batches race the lazy build — the lock makes them share one embedder (one copy of the model).
+        self._embedder_lock = threading.Lock()
 
     def bind_embedder(self, embedder) -> None:
         """Use ``embedder`` (the engine's shared one) instead of building a second copy of the model."""
@@ -104,10 +108,11 @@ class EmbedStage(PipelineStage):
 
     def _get_embedder(self):
         if self._embedder is None:
-            from tarnrag.core.resources.embedder import Embedder
+            with self._embedder_lock:
+                if self._embedder is None:  # another thread may have built it while we waited
+                    from tarnrag.core.resources.embedder import Embedder
 
-            self._embedder = Embedder.create(
-                self.config.embedding, self.config.embedding_dimension
-            )
-            self._owns_embedder = True
+                    embedder = Embedder.create(self.config.embedding, self.config.embedding_dimension)
+                    self._owns_embedder = True
+                    self._embedder = embedder  # published last: whoever sees it also sees the ownership
         return self._embedder
