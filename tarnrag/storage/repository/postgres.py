@@ -27,8 +27,17 @@ class PostgresRepository(DocumentRepository):
     def _driver_url(self, url: str) -> str:
         """Pin the asyncpg driver on any Postgres URL — ``postgresql://``, the ``postgres://`` alias many
         hosts hand out (Heroku / Render / Supabase; SQLAlchemy removed that dialect name), or one naming a
-        sync driver (``postgresql+psycopg2://``), which an async engine can't run."""
-        return make_url(url).set(drivername="postgresql+asyncpg").render_as_string(hide_password=False)
+        sync driver (``postgresql+psycopg2://``), which an async engine can't run.
+
+        libpq's ``sslmode`` query parameter (``?sslmode=require``, common in hosted URLs) becomes asyncpg's
+        ``ssl``, which takes the same mode names: SQLAlchemy passes query parameters to
+        ``asyncpg.connect`` as keyword arguments, and it has no ``sslmode``. An explicit ``ssl`` wins."""
+        parsed = make_url(url)
+        query = dict(parsed.query)
+        if "sslmode" in query:
+            sslmode = query.pop("sslmode")
+            query.setdefault("ssl", sslmode)
+        return parsed.set(drivername="postgresql+asyncpg", query=query).render_as_string(hide_password=False)
 
     def _vector_type(self):
         return Vector(self.embedding_dimension)
