@@ -15,6 +15,7 @@ injected index won't ``open()`` with a non-injecting embedder; the two are compa
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from typing import Literal
 
@@ -44,6 +45,9 @@ class EmbedStage(PipelineStage):
     def __init__(self, config: EmbedStage.Config) -> None:
         super().__init__(config)
         self._embedder = None  # lazy; built on first use (or injected by tests)
+        # A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once, so its first Embed
+        # batches race the lazy build — the lock makes them share one embedder (one copy of the model).
+        self._embedder_lock = threading.Lock()
 
     def accepts(self, item: PipelineItem) -> bool:
         """Only retrieval units get a vector — the orchestrator never enqueues an Embed job for a section
@@ -90,9 +94,9 @@ class EmbedStage(PipelineStage):
 
     def _get_embedder(self):
         if self._embedder is None:
-            from tarnrag.core.resources.embedder import Embedder
+            with self._embedder_lock:
+                if self._embedder is None:  # another thread may have built it while we waited
+                    from tarnrag.core.resources.embedder import Embedder
 
-            self._embedder = Embedder.create(
-                self.config.embedding, self.config.embedding_dimension
-            )
+                    self._embedder = Embedder.create(self.config.embedding, self.config.embedding_dimension)
         return self._embedder

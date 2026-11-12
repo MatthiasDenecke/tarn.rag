@@ -123,7 +123,11 @@ class IngestionEngine(Engine):
         pipeline = cls.build_pipeline(settings)
 
         if settings.MODE == "distributed":
-            queue: JobEnqueuer = await PgQueuerJobQueue.connect(settings.database.queue_url)
+            queue: JobEnqueuer = await PgQueuerJobQueue.connect(
+                settings.database.queue_url,
+                concurrency=settings.worker.concurrency,
+                dequeue_timeout_seconds=settings.worker.queue_timeout_seconds,
+            )
             auto_drain = False
         else:  # embedded — run the whole pipeline in this process
             queue = InMemoryJobQueue()

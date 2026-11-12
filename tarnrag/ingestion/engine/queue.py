@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 from tarnrag.ingestion.engine.jobs import Batch, IngestionJob
 
@@ -116,9 +117,17 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
     Queue backed by pgQueuer — the only adapter that imports pgQueuer (lazily).
     pgQueuer owns claiming/retries/NOTIFY/dead-lettering; a handler that raises
     propagates so pgQueuer requeues the job (= recovery, D5).
+
+    ``concurrency`` caps the batches this worker process runs at once, and ``dequeue_timeout_seconds`` is
+    how long the loop waits for work before re-polling — ``settings.worker`` (``WORKER__CONCURRENCY`` /
+    ``WORKER__QUEUE_TIMEOUT_SECONDS``). pgQueuer's own per-worker knob, ``max_concurrent_tasks``, must be
+    at least twice its dequeue ``batch_size``, so the loop runs with ``batch_size = concurrency // 2`` (≥ 1)
+    and ``max_concurrent_tasks = max(concurrency, 2 · batch_size)`` — which bounds how many jobs this
+    worker claims — and a semaphore makes the execution cap exact (it only binds at ``concurrency=1``).
+    (pgQueuer's entrypoint ``concurrency_limit`` is a different thing: global, across all workers.)
     """
 
-    def __init__(self, driver, pool=None):
+    def __init__(self, driver, pool=None, *, concurrency: int = 4, dequeue_timeout_seconds: float = 30):
         from pgqueuer import QueueManager
         from pgqueuer.queries import Queries
 
@@ -127,9 +136,16 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
         self._queries = Queries(driver)
         self._qm = QueueManager(self._queries)
         self._pool = pool  # the asyncpg pool connect() opened (None when a driver is injected)
+        if concurrency < 1:
+            raise ValueError(f"worker concurrency must be >= 1, got {concurrency}")
+        self.concurrency = concurrency
+        self.dequeue_timeout = timedelta(seconds=dequeue_timeout_seconds)
+        self._slots = asyncio.Semaphore(concurrency)  # in-flight handler executions in this worker
 
     @classmethod
-    async def connect(cls, connection_url: str) -> PgQueuerJobQueue:
+    async def connect(
+        cls, connection_url: str, *, concurrency: int = 4, dequeue_timeout_seconds: float = 30
+    ) -> PgQueuerJobQueue:
         """
         Create an asyncpg pool for ``connection_url`` and wrap it in a pgQueuer driver.
         """
@@ -137,7 +153,10 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
         from pgqueuer.db import AsyncpgPoolDriver
 
         pool = await asyncpg.create_pool(connection_url)
-        return cls(AsyncpgPoolDriver(pool), pool=pool)
+        return cls(
+            AsyncpgPoolDriver(pool), pool=pool,
+            concurrency=concurrency, dequeue_timeout_seconds=dequeue_timeout_seconds,
+        )
 
     async def aclose(self) -> None:
         """Release the asyncpg pool :meth:`connect` opened. Idempotent; a driver-injected instance owns
@@ -159,7 +178,13 @@ class PgQueuerJobQueue(JobEnqueuer, JobConsumer):
 
         @self._qm.entrypoint(ENTRYPOINT)
         async def _run(pg_job: Job) -> None:
-            await handler(Batch([IngestionJob.model_validate_json(pg_job.payload)]))
+            async with self._slots:
+                await handler(Batch([IngestionJob.model_validate_json(pg_job.payload)]))
 
     async def run(self) -> None:
-        await self._qm.run()
+        batch_size = max(1, self.concurrency // 2)
+        await self._qm.run(
+            dequeue_timeout=self.dequeue_timeout,
+            batch_size=batch_size,
+            max_concurrent_tasks=max(self.concurrency, 2 * batch_size),  # pgQueuer: ≥ 2 · batch_size
+        )

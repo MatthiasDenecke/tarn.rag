@@ -3,6 +3,11 @@ constructed DoclingDocument (needs only ``docling-core``); the end-to-end conver
 the heavy ``docling`` package being installed."""
 
 import importlib.util
+import sys
+import threading
+import time
+import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -132,3 +137,41 @@ def test_docling_end_to_end_on_fixture():
 def test_docling_extractor_requires_a_path():
     with pytest.raises(ValueError):
         DoclingExtractor(DoclingExtractor.Config()).extract(Source(source_id="d1", content="x"))
+
+
+def test_concurrent_extractions_share_one_converter_and_take_turns(monkeypatch):
+    """A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once. Concurrent first
+    extractions build the converter (and its models) once, and conversions on it never overlap, since
+    docling doesn't promise that concurrent ``convert`` calls on one converter are safe."""
+    built, running, peak = [], [0], [0]
+    count = threading.Lock()
+
+    class FakeConverter:  # stands in for docling's DocumentConverter (not installed in the test env)
+        def __init__(self):
+            built.append(self)
+            time.sleep(0.05)  # a model load: long enough for every thread to reach the check
+
+        def convert(self, path):
+            with count:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.02)
+            with count:
+                running[0] -= 1
+            return types.SimpleNamespace(document=path)
+
+    module = types.ModuleType("docling.document_converter")
+    module.DocumentConverter = FakeConverter
+    monkeypatch.setitem(sys.modules, "docling", types.ModuleType("docling"))
+    monkeypatch.setitem(sys.modules, "docling.document_converter", module)
+    monkeypatch.setattr(DoclingExtractor, "_map", staticmethod(lambda dl_doc, source: dl_doc))
+    extractor = DoclingExtractor(DoclingExtractor.Config())
+    start = threading.Barrier(4)
+
+    def extract(i):
+        start.wait()
+        return extractor.extract(Source(source_id=f"d{i}", source_kind="pdf", path=f"/docs/{i}.pdf"))
+
+    with ThreadPoolExecutor(4) as pool:
+        assert list(pool.map(extract, range(4))) == [f"/docs/{i}.pdf" for i in range(4)]
+    assert len(built) == 1 and peak[0] == 1
