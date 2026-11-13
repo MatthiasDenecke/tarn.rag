@@ -1,0 +1,129 @@
+# =============================================================================
+# Part III · Example 02 — the same conversation WITH memory
+# =============================================================================
+# Example 01 searched the follow-up exactly as typed, and it failed:
+#
+#     you> Which frame is the TX-200 built on?
+#     you> Which oil grade does it require?          <- "it" = the frame just named
+#
+# ONE line changes here: `conversation_memory.enabled: true`. Now, before
+# anything else runs, the follow-up is rewritten against the last few turns into
+# a question that stands on its own —
+#     "Which oil grade does the Cooper-Bessemer GMV frame require?"
+# — and retrieval, the reasoner and the proof tree work on THAT, unchanged. The
+# conversation never reaches the reader: it decides which question is asked,
+# never what counts as evidence.
+#
+#     diff examples/part_iii/example_01/config.yaml examples/part_iii/example_02/config.yaml
+#
+# As a script (offline — run.py injects a scripted model, no key needed):
+#     python -m examples.part_iii.example_02.run
+# ...or interactively, against a live model (needs the key named under `llm`):
+#     python -m tarnrag.console examples/part_iii/example_02/config.yaml
+#     tarn> ingest examples/docs/corpus-2
+#     tarn> ingest examples/docs/corpus-2-frames
+#     tarn> ask Which frame is the TX-200 built on?
+#     tarn> explain Which oil grade does it require?     (a dry run: shows the rewrite, records nothing)
+#     tarn> ask Which oil grade does it require?
+#     tarn> history
+#
+# Every value is explicit — no Python defaults.
+# =============================================================================
+
+MODE: embedded            # whole pipeline runs in-process (SQLite + in-memory queue; no Postgres)
+ID_POLICY: caller         # document id = the file's stem (readable, stable: "lubrication-spec", ...)
+EMBEDDING_DIMENSION: 384  # gte-small's output width — the index and the repository must agree on it
+
+# --- the embedding pipeline ---------------------------------------------------
+# The SAME embedder embeds passages (at ingest) and queries (at retrieval); its
+# identity is fingerprinted into the index, and retrieval refuses to open a store
+# built with a different embedder.
+embedding:
+  provider: onnx                  # local ONNX runtime — offline, no API key
+  model: thenlper/gte-small       # the model id, recorded in the index fingerprint
+  revision: ""                    # "" = use whatever is on disk (pin a revision to be strict)
+  model_dir: ./models/gte-small   # local model.onnx + tokenizer.json (run scripts/fetch_model.py once)
+  max_seq_length: 512             # tokens past this are truncated before encoding
+  pooling: mean                   # gte-small is an encoder → mean-pool the token vectors
+  normalize: l2                   # L2-normalize, so a dot product is cosine similarity
+  query_prefix: ""                # gte-small is symmetric → no asymmetric query/passage prefixes
+  passage_prefix: ""
+  batch_size: 32                  # passages per embed call
+  inject_header_path: false       # embed the chunk text as-is (do not prepend its section header path)
+
+# --- the store ----------------------------------------------------------------
+# One SQLite file holds documents, chunks, embeddings (sqlite-vec), the FTS5
+# sparse index — and, when memory is on, the conversation's turns. Part III has
+# its OWN store, shared by examples 01 and 02 (ingest once; the two examples are
+# a config swap over it): corpus-2 PLUS corpus-2-frames, the corpus Part II's
+# example 08 uses. The parent dir is created on open.
+database:
+  document_url: sqlite:///./examples/part_iii/store/conversation.db
+
+# --- the LLM (the reader behind `ask`, and the rewriter when memory is on) -----
+# One model serves both. Built lazily on first need, so a retrieve-only session
+# never needs a key. `run.py` INJECTS a scripted offline model instead and never
+# reads this block; the interactive console does. The key is NEVER in this file —
+# only the NAME of the env var that holds it.
+llm:
+  provider: openai                 # OpenAI, or any OpenAI-compatible /chat/completions endpoint
+  model: gpt-4o                    # the reader Part II's generation rungs use
+  api_key_env: OPENAI_LLM_KEY      # read the key from this env var (not the standard OPENAI_API_KEY)
+  api_base_url: ""                 # "" = OpenAI's endpoint; set to a vLLM / Together / Groq / … URL
+  temperature: 0.0                 # as deterministic as the API allows
+  max_tokens: 1024
+  api_timeout: 60.0
+
+components:
+  # --- ingestion: the DAG that turns each .md file into embedded chunks --------
+  ingestion_pipeline:
+    class_name: pipeline
+    stages:
+      # 1) load + structured-parse: route a file to an extractor by its extension
+      - class_name: LoadAndParse
+        routes:
+          md: { class_name: markdown }   # .md → the Markdown extractor (headings become header paths)
+        default_extractor: { class_name: plain_text }   # any other extension → plain text
+      # 2) clean + normalize whitespace
+      - class_name: CleanAndNormalize
+      # 3) chunk: flat, overlapping character windows (no section-parent tree)
+      - class_name: Chunk
+        chunker:
+          class_name: recursive
+          chunk_size: 400          # ~one short section per chunk on this corpus
+          overlap: 80              # carry 80 chars between neighbours so a sentence isn't cut cold
+      # 4) embed each chunk with the `embedding` settings above (terminal stage)
+      - class_name: Embed
+
+  # --- retrieval: dense-only — the conversation, not the retriever, is the subject here ---
+  retrieval_pipeline:
+    class_name: retrieval_pipeline
+    retrievers:
+      - class_name: dense          # exact vector KNN over the embedded chunks
+    fuser: { class_name: identity } # a single retriever → nothing to fuse (pass the ranking through)
+
+  # --- license/scope pre-filter applied inside the retrievers (ModusQ §5.6) ----
+  license_policy: { class_name: default_license }
+
+  # --- generation: the simplest reader — one retrieve→read pass over the top 3 --
+  # Deliberately minimal (no grounding check, no multi-hop), so the ONLY thing
+  # that differs between examples 01 and 02 is the conversation layer below.
+  generation_pipeline:
+    class_name: generation_pipeline
+    reasoner: { class_name: single_hop, top_k: 3 }   # the reader sees the 3 best passages
+    assembler: { class_name: provenance }            # answer + a provenance-bearing proof tree
+
+  # --- conversation memory: the short-term conversational context layer --------
+  # Applied by the TarnRag facade in front of retrieve / explain / ask. When on,
+  # one console run (one TarnRag) is one conversation: a follow-up is rewritten
+  # into a standalone question against the last `max_turns` turns, by one LLM
+  # call (`condense`); `ask` and `retrieve` record a turn, `explain` is a dry run.
+  conversation_memory:
+    class_name: conversation_memory
+    enabled: true           # ← THE SWITCH: on — a follow-up is resolved against the conversation
+    session_id: ""           # "" = a fresh conversation per run; set an id to resume one across runs
+    max_turns: 6             # the short-term window: how many recent turns the rewriter is shown
+    max_answer_chars: 600    # each remembered answer is cut to this before the rewriter sees it
+    contextualizer:
+      class_name: condense   # one LLM call: resolve references only — never answer, never add facts
+      max_tokens: 256        # cap on the rewrite call (a rewrite is one sentence)

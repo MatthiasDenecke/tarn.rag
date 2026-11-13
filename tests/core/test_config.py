@@ -104,3 +104,40 @@ def test_embedded_rejects_postgres_document_url():
         Settings(_env_file=None, MODE="embedded", database={"document_url": "postgresql://docs"})
     # embedded + the SQLite default -> ok
     assert Settings(_env_file=None, MODE="embedded").database.document_url.startswith("sqlite")
+
+
+def test_conversation_memory_is_default_filled_and_off():
+    """The fifth components key is always present (a Settings is self-complete) and DISABLED — memory
+    is opt-in, so an unconfigured deployment stays stateless."""
+    from tarnrag.core.engine.config import CONVERSATION_MEMORY
+
+    spec = Settings(_env_file=None).components[CONVERSATION_MEMORY]
+    assert spec == {"class_name": "conversation_memory", "enabled": False}
+
+
+def test_a_supplied_conversation_memory_spec_wins_over_the_default():
+    from tarnrag.core.engine.config import CONVERSATION_MEMORY
+
+    supplied = {"class_name": "conversation_memory", "enabled": True, "max_turns": 3}
+    settings = Settings(_env_file=None, components={CONVERSATION_MEMORY: supplied})
+    assert settings.components[CONVERSATION_MEMORY] == supplied
+    assert "retrieval_pipeline" in settings.components  # the other defaults are still filled alongside
+
+
+def test_conversation_memory_is_switched_from_a_yaml_file(tmp_path):
+    """The on/off switch is plain config: ``enabled`` in the YAML, read by ``Settings.from_file``."""
+    from tarnrag.core.engine.config import CONVERSATION_MEMORY
+
+    def load(enabled: str) -> dict:
+        cfg = tmp_path / f"memory-{enabled}.yaml"
+        cfg.write_text(
+            "components:\n"
+            "  conversation_memory:\n"
+            "    class_name: conversation_memory\n"
+            f"    enabled: {enabled}\n"
+            "    max_turns: 4\n"
+        )
+        return Settings.from_file(cfg).components[CONVERSATION_MEMORY]
+
+    assert load("true")["enabled"] is True and load("true")["max_turns"] == 4
+    assert load("false")["enabled"] is False

@@ -38,12 +38,14 @@ or inheritance. The relations that DO hold are composition (``Chunk.parent_doc_i
 
 Two small value records round out the module: ``DocumentFacts`` (a document's presence +
 chunk/embedding counts, the facts port's return type) and ``MethodRef`` (a reference to an
-indexed method, used in both queries and results).
+indexed method, used in both queries and results). ``ConversationTurn`` is the at-rest record of one
+turn of a conversation (the conversation layer's memory — see ``doc/conversation-memory-design.md``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -203,3 +205,30 @@ class MethodRef:
 
     method_id: str
     method_version: str | None = None  # None → latest in the index
+
+
+# The operations that record a turn: ``ask`` (question + answer) and ``retrieve`` (question only).
+# ``explain`` is a dry run and never records one.
+TURN_KINDS = ("ask", "retrieve")
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """
+    One turn of a conversation — the at-rest record the conversation layer remembers (mapped to/from
+    the ``conversation_turns`` table). ``question`` is what the user typed; ``standalone_question`` is
+    what was actually searched/answered (identical unless a follow-up was rewritten). An ``ask`` turn
+    also carries its ``answer`` and the generation verdicts; a ``retrieve`` turn leaves those ``None``.
+    ``ordinal`` (the 0-based position within the conversation) and ``created_at`` are assigned by the
+    store on append.
+    """
+
+    session_id: str
+    kind: str  # one of TURN_KINDS
+    question: str  # as typed
+    standalone_question: str  # as executed
+    answer: str | None = None  # None for a retrieve turn
+    grounded: bool | None = None  # None for a retrieve turn
+    abstained: bool | None = None  # None for a retrieve turn
+    ordinal: int = -1  # assigned by the store
+    created_at: datetime | None = None  # assigned by the store

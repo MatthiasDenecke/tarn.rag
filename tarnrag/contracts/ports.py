@@ -3,8 +3,9 @@
 The seams the rest of the system depends on: ``ChunkStore`` (where the ingestion ResultSinks
 write document/chunk/embedding data) and the two status ports the ``DocumentStatusReader``
 composes — ``DocumentFactsSource`` (presence + counts + content-hash + the list/delete admin ops)
-and ``JobStatusSource`` (the per-job rows). Kept as narrow ABCs so each caller depends only on
-the slice it uses (ISP).
+and ``JobStatusSource`` (the per-job rows). ``RetrievalStore`` is the read port retrieval searches
+through, and ``ConversationStore`` the port the conversation layer remembers turns through. Kept as
+narrow ABCs so each caller depends only on the slice it uses (ISP).
 """
 
 from __future__ import annotations
@@ -12,7 +13,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from tarnrag.contracts.dtos import Chunk, Document, DocumentFacts, Embedding
+from tarnrag.contracts.dtos import (
+    Chunk,
+    ConversationTurn,
+    Document,
+    DocumentFacts,
+    Embedding,
+)
 from tarnrag.contracts.results import Candidate, ChunkFilter, ChunkRecord
 
 
@@ -123,3 +130,30 @@ class RetrievalStore(ABC):
     async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
         """§8 hydration: canonical text + provenance + license for the given chunk ids, preserving
         input order."""
+
+
+class ConversationStore(ABC):
+    """
+    The narrow port the conversation layer remembers turns through (ISP) — append a turn, read a
+    conversation back, delete it. Implemented by ``DocumentRepository`` (one store), so the
+    ``tarnrag.conversation`` package depends on this interface, never on the repository. Turns are
+    kept until :meth:`delete_conversation`; the *short-term* window is a read-side ``limit``.
+    """
+
+    @abstractmethod
+    async def append_turn(self, turn: ConversationTurn) -> ConversationTurn:
+        """Persist ``turn`` at the end of its conversation; return it with the store-assigned
+        ``ordinal`` and ``created_at``. A conversation is sequential — concurrent appends to the
+        *same* ``session_id`` are not supported (different conversations never interfere)."""
+
+    @abstractmethod
+    async def conversation_turns(
+        self, session_id: str, limit: int | None = None
+    ) -> list[ConversationTurn]:
+        """The turns of one conversation, **oldest first**. ``limit`` keeps only the most recent
+        ``limit`` turns (the short-term window); ``None`` returns the whole conversation. Empty for
+        an unknown ``session_id``."""
+
+    @abstractmethod
+    async def delete_conversation(self, session_id: str) -> int:
+        """Remove every turn of one conversation; return how many were removed."""

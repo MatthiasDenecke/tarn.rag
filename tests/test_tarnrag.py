@@ -220,7 +220,7 @@ async def test_close_releases_built_resources(tmp_path):
     """``close`` releases what the facade BUILT: the generation LLM (when not injected) and the ingestion
     engine's queue — plus the shared store. Recorded through the same ``aclose`` seams the engines use."""
     settings = _plumbing_settings(tmp_path)
-    settings.llm.api_key = "k"  # lets _build_llm construct a backend (lazily connecting — no network)
+    settings.llm.api_key = "k"  # lets the facade construct a backend (lazily connecting — no network)
     tarn = await TarnRag(settings).open()
     await tarn.docs()  # lazily builds the ingestion engine
     tarn._gen()  # lazily builds the generation engine over the built LLM

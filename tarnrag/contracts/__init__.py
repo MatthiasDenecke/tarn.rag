@@ -6,7 +6,9 @@ from here: ``from tarnrag.contracts import Document, ChunkStore, Candidate, Retr
 """
 
 from tarnrag.contracts.dtos import (
+    TURN_KINDS,
     Chunk,
+    ConversationTurn,
     CorpusStatus,
     Document,
     DocumentFacts,
@@ -17,6 +19,7 @@ from tarnrag.contracts.dtos import (
 from tarnrag.contracts.index_meta import IndexMeta
 from tarnrag.contracts.ports import (
     ChunkStore,
+    ConversationStore,
     DocumentFactsSource,
     JobStatusSource,
     RetrievalStore,
@@ -42,6 +45,7 @@ from tarnrag.contracts.structure import (
 )
 
 __all__ = [
+    "TURN_KINDS",
     "Annotation",
     "Candidate",
     "Chunk",
@@ -49,6 +53,8 @@ __all__ = [
     "ChunkProvenance",
     "ChunkRecord",
     "ChunkStore",
+    "ConversationStore",
+    "ConversationTurn",
     "CorpusStatus",
     "Document",
     "DocumentFacts",

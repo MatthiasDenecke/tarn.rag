@@ -5,7 +5,8 @@ needed to *use* the library — that's what the [tutorials](../tutorials/index.m
 [how-to guides](../how-to/index.md) are for.
 
 - [Architecture overview](architecture.md) — the three engines, the one store (§8 index), the
-  embedder fingerprint, and the ingestion job DAG.
+  embedder fingerprint, the ingestion job DAG, and the conversation layer that sits in front of the
+  engines.
 
 The deep design record lives in [`doc/`](../../doc) (functional requirements, subsystem specs,
 measured phase history); explanation pages link into it where a spec is the source of truth, and

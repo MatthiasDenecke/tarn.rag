@@ -148,3 +148,19 @@ backfill past dropped chunks.
 
 A worked generation spec — cascading grounding with abstention — ships in
 [`examples/console.config.json`](../../examples/console.config.json).
+
+## Conversation (`components.conversation_memory`)
+
+Applied by the `TarnRag` facade, not by an engine. Off unless `enabled: true`.
+
+### Memory
+
+| Tag | Component | Notes |
+|---|---|---|
+| `conversation_memory` **(default, disabled)** | `ConversationMemory` | Reads the last `max_turns` turns of the conversation, has its contextualizer make the question standalone, and records `ask` / `retrieve` turns. Fields: [settings reference](settings.md#conversation_memory). |
+
+### Contextualizers (child of `conversation_memory`)
+
+| Tag | Component | Notes |
+|---|---|---|
+| `condense` **(default)** | `CondenseContextualizer` | One LLM call that rewrites a follow-up into a standalone question (`max_tokens`, default 256, caps the call). Not called on a conversation's first turn. Falls back to the question as typed — reported as a warning — if there is no LLM or the reply is unusable. |

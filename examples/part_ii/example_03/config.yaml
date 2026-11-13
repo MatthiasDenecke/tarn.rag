@@ -115,3 +115,8 @@ components:
     reasoner: { class_name: single_hop, top_k: 4 }   # one retrieve→read pass (cheapest)
     assembler: { class_name: provenance }            # answer + a provenance-bearing proof tree
     # no grounding_checker / abstain yet — added in Example 07
+
+  # --- conversation memory: OFF — every Part II rung asks standalone questions --
+  # Pinned explicitly, like everything else here (no reliance on the library default), so a default
+  # change can never turn a rung into a conversation. Part III switches it on.
+  conversation_memory: { class_name: conversation_memory, enabled: false }

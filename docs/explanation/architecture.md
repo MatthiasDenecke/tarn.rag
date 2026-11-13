@@ -1,6 +1,7 @@
 # Architecture overview
 
-tarn.rag is three engines over one store, with a facade wiring them together. This page explains
+tarn.rag is three engines over one store, with a facade wiring them together — and, optionally, a
+conversation layer in front of them. This page explains
 the shape and the invariants that hold it together; the full design specs live in
 [`doc/`](../../doc) and the contributor-oriented deep dive in [`CLAUDE.md`](../../CLAUDE.md).
 
@@ -12,6 +13,7 @@ flowchart TB
 
     subgraph FACADE["TarnRag — facade & composition root: one store, one embedder"]
         direction LR
+        CONV["conversation memory — opt-in<br/>follow-up → standalone question"]
         IE["IngestionEngine"]
         RE["RetrievalEngine"]
         GE["GenerationEngine"]
@@ -69,6 +71,8 @@ flowchart TB
 
     INGEST -->|"write: chunks · embeddings · job status"| REPO
     RETR <-->|"read: dense_knn · sparse_search · hydrate"| REPO
+    CONV -.->|"rewrite"| LLM
+    CONV <-.->|"conversation turns"| REPO
 ```
 
 `TarnRag` is the composition root: it builds the one store (the repository) and the embedder once
@@ -150,6 +154,41 @@ retrieved but never grounds an answer, and generation's license classes are the 
 intersected with `GENERATION_GROUNDING`'s — narrower, never wider. Anything the auto-merger brings
 in passes the same filter.
 
+## Conversation memory sits in front of the engines
+
+Everything above answers one question at a time. Conversation memory — off by default, switched on by
+`components.conversation_memory.enabled` — lets a follow-up such as *"which oil grade does it
+require?"* resolve against the last few turns. It is deliberately the smallest thing that can do
+that: before `retrieve`, `explain` or `ask` runs, one LLM call rewrites the follow-up into a
+**standalone question**, and the engines then run on that question exactly as they would have anyway.
+
+Three choices shape it.
+
+**It is a rewrite, not extra context for the reader.** The conversation is shown to the rewriter and
+to nothing else. The reader still sees a question and retrieved passages, and an answer is still
+built from — and checked against — those passages alone. History decides *which question is asked*;
+it never becomes evidence. The alternative, putting the transcript in the reader's prompt, would let
+an earlier answer flow into a new one without a citation, past the grounding check.
+
+**It lives in the facade, not in an engine.** `tarnrag/conversation/` depends only on `core` and
+`contracts`; it imports neither `retrieval` nor `generation`, and neither imports it. `TarnRag`, the
+composition root, is the one place that knows all of them, so it applies the layer and hands each
+engine an ordinary `Query`. The retrieval core therefore stays LLM-free by default and portable, the
+`Query` wire contract does not grow a conversation field, and one rewrite serves all three
+operations. The cost is that memory is a facade feature: an engine used on its own, and the eval
+harnesses that drive engines directly, are stateless.
+
+**The memory is a window over stored turns.** Turns are persisted in the one store (a
+`conversation_turns` table beside the index, reached through a narrow `ConversationStore` port) and
+kept until deleted; only the last `max_turns` are ever shown to the rewriter. `ask` and `retrieve`
+record a turn. `explain` does not — it is a dry run that shows what `retrieve` would search without
+changing the conversation. Because a rewrite changes what is searched, each turn keeps the question
+both as typed and as run, and a follow-up that could not be rewritten is used as typed *and reported*.
+
+One `TarnRag` is one conversation: fresh on each open unless a `session_id` is configured or passed.
+The design record, with every decision and the drawback accepted for it, is
+[`doc/conversation-memory-design.md`](../../doc/conversation-memory-design.md).
+
 ## Where the deep detail lives
 
 | Topic | Spec |
@@ -157,5 +196,6 @@ in passes the same filter.
 | Ingestion requirements & job model | [`doc/FUNCTIONAL_REQUIREMENTS.md`](../../doc/FUNCTIONAL_REQUIREMENTS.md) |
 | Retrieval subsystem (ModusQ) | [`doc/ModusQ_RetrievalSubsystemSpec.md`](../../doc/ModusQ_RetrievalSubsystemSpec.md) · [`doc/retrieval-architecture-design.md`](../../doc/retrieval-architecture-design.md) |
 | Generation design | [`doc/generation-architecture-design.md`](../../doc/generation-architecture-design.md) |
+| Conversation memory | [`doc/conversation-memory-design.md`](../../doc/conversation-memory-design.md) |
 | Layout-aware extraction | [`doc/structured-document-design.md`](../../doc/structured-document-design.md) · [`doc/extraction-seam-design.md`](../../doc/extraction-seam-design.md) |
 | Measured results & phase history | [`doc/phases.md`](../../doc/phases.md) |

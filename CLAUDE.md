@@ -10,7 +10,7 @@ consuming REST API lives in the separate **tiqtasq.backend** repo. The public su
 a high-level facade (`TarnRag`) that wires all three over one store:
 
 ```python
-from tarnrag import TarnRag                                  # the high-level facade (ingest/retrieve/ask)
+from tarnrag import TarnRag                                  # the high-level facade (ingest/retrieve/ask/history)
 from tarnrag import IngestionEngine, RetrievalEngine, run_worker, Query, DocumentStatus
 ```
 
@@ -25,10 +25,14 @@ RetrievalEngine.create() → await search → retrievers (dense/sparse, license-
   → auto-merge → rerank → top_k → ranked, provenance-bearing results
 
 GenerationEngine.create() → await answer → reason (retrieve↔read) → ground-check → proof tree + evidence
+
+TarnRag (opt-in conversation memory) → contextualize (last N turns → standalone question, one LLM call)
+  → retrieve / explain / ask as above, on that question → remember the turn (ask + retrieve; not explain)
 ```
 
 Design specs: `doc/FUNCTIONAL_REQUIREMENTS.md` (ingestion), `doc/ModusQ_RetrievalSubsystemSpec.md` +
-`doc/retrieval-architecture-design.md` (retrieval), and `doc/generation-architecture-design.md` (generation).
+`doc/retrieval-architecture-design.md` (retrieval), `doc/generation-architecture-design.md` (generation),
+and `doc/conversation-memory-design.md` (the conversation layer).
 Retrieval methods, generation steps, extractors, chunkers, and enrichers are all config-driven **Components**
 (the standalone [`bausatz`](https://pypi.org/project/bausatz/) package, `>=0.3` — `Component` + `ComponentFactory` + `Registry`, imported directly) composed by spec under `Settings.components`.
 Container children are **typed Configs** (`list[Retriever.Config]`, `Chunker.Config`, …): a spec tree validates in one
@@ -86,9 +90,12 @@ tarnrag/
 ├── retrieval/    # components/ (retriever · fuser · merger · reranker · classifier · license_policy),
 │                 #   pipeline/ (searcher · pipeline · router), engine/ (engine · protocol), types
 ├── generation/   # components/ (reasoner · grounding · assembler), pipeline/, engine/, context · types
+├── conversation/ # short-term conversational context: memory (ConversationMemory) · components/
+│                 #   (contextualizer: condense) · context · types — depends ONLY on core + contracts
 ├── eval/         # eval harnesses: retrieval (metrics · dataset · harness), generation (generation),
 │                 #   public benchmarks (benchmarks · benchmark_runner), layout/TAT-QA (layout)
 ├── tarnrag.py    # TarnRag — high-level facade + composition root over the three engines
+│                 #   (+ applies conversation memory in front of retrieve / explain / ask)
 ├── report.py · console.py · _cli.py  # Outcome/Report/Issue/Severity · rich console · entry wrapper
 run_worker.py            # distributed consumer entry: asyncio.run(run_worker())
 scripts/fetch_model.py   # fetch the ONNX model + tokenizer into the model dir
@@ -184,6 +191,21 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   call); `Observability.create(settings.observability)` returns the configured adapter or `None` when
   disabled. Adapters: `structured_logging` (JSON-lines over stdlib logging — one machine-parseable line
   per metric/log event); any other `type` (incl. the not-yet-implemented `prometheus`) installs the no-op.
+- **Conversation memory is a facade-level layer (opt-in, off by default).** `tarnrag/conversation/`
+  rewrites a follow-up into a **standalone question** against the last `max_turns` turns *before*
+  retrieval/generation run (`ConversationMemory` container + a `QueryContextualizer` child; `condense` =
+  one LLM call). Rules that must hold: (1) `conversation → core + contracts` only — it imports neither
+  `retrieval` nor `generation` and they never import it (`tests/conversation/test_dependency_rule.py`);
+  the contextualizer works on plain text and **`TarnRag` builds the `Query`**, attaching a
+  `contextualized` `Annotation` (`deterministic=False`). (2) History **never reaches the reader** — it
+  picks the question, it is not evidence, so grounding is not weakened. (3) The engines, `Query`, and
+  `GenerationResult` are untouched; a bare engine (and the eval harnesses) stays stateless. (4) Turns
+  persist through the `ConversationStore` port (`conversation_turns` table in `base.py` — shared Core,
+  no dialect hook, **not** §8, additive so `SCHEMA_VERSION` is unchanged); kept until `forget()`, only
+  the window is read. (5) `ask` + `retrieve` record a turn, `explain` is a dry run; a failed operation
+  records nothing. (6) One `TarnRag` = one conversation: fresh per `open()` unless `session_id` is in
+  the spec or passed to `TarnRag(...)`. (7) A rewrite that can't be made (no LLM / unusable reply) falls
+  back to the question as typed **and reports a WARNING**; a raising LLM call propagates.
 - **Retrieval is config-driven Components.** `RetrievalEngine.search` delegates to a `Searcher` built from
   `Settings.components[RETRIEVAL_PIPELINE]` — a `RetrievalPipeline` (parallel `Retriever`s {dense/sparse} →
   `Fuser` {identity/rrf, `(score desc, chunk_id asc)` tie-break} → hydrate → optional `Merger` {auto-merge}
@@ -200,7 +222,8 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   `settings.observability` — read from env via the `GROUP__FIELD` convention (e.g. `EMBEDDING__MODEL`,
   `DATABASE__DOCUMENT_URL`). Cross-cutting `MODE`, `EMBEDDING_DIMENSION`, `UPLOAD_DIR`, `ID_POLICY`
   stay top-level/flat. `Settings.components` holds the pipeline specs (`ingestion_pipeline` /
-  `retrieval_pipeline` / `generation_pipeline` / `license_policy`), default-filled by a `model_validator`.
+  `retrieval_pipeline` / `generation_pipeline` / `license_policy` / `conversation_memory`), default-filled
+  by a `model_validator` (`conversation_memory` is filled **disabled** — `enabled: true` switches it on).
   Another `model_validator` pins the backend: `distributed` requires Postgres + `DATABASE__QUEUE_URL`;
   `embedded` requires SQLite. See `.env.example`. Each resource/repo is built via a `create()` from its
   config slice (`Embedder.create`, `DocumentRepository.create`).
@@ -233,10 +256,14 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
 - **Docs must not contradict measured findings.** `doc/phases.md` records the sweeps (e.g. S1: the
   cross-encoder subsumes routing, so routing under a reranker is pure cost). Check a claim against it
   before teaching the opposite.
+- **Part III examples are offline.** Their `run.py` injects a scripted `StaticLanguageModel` bound to
+  what the pipeline hands it (`examples/part_iii/_conversation.py`); the published verdicts are the
+  model-free retrieval ranks. Don't present scripted output as live-model behaviour.
 - **Part II configs are fully explicit YAML — no reliance on library defaults.** Every stage and
   component parameter is enumerated, so a default change cannot move the results. One knob per rung;
   the **diff between two configs is the lesson**. Ingest once (rungs are config swaps over one store);
   only a *representation* change (chunker/enricher/extractor) gets its own store, and says so.
+  Part III follows the same rule, and every Part II config pins `conversation_memory` **off**.
 - **Adding an example:** the code dir (with `__init__.py`), a smoke test in `tests/examples/`, a
   tutorial page under `docs/tutorials/part-*/`, a link in that series' `index.md`, and a card README.
 

@@ -17,6 +17,15 @@ first ``ask``. Use it directly::
         print(answer.value.answer)
 
 …or behind a UI. ``llm`` may be injected (tests / a custom backend).
+
+**Conversation memory** (opt-in — ``components.conversation_memory.enabled``; see
+``doc/conversation-memory-design.md``). With it on, one ``TarnRag`` is one conversation: ``retrieve`` /
+``explain`` / ``ask`` first make the question stand on its own against the last few turns (a follow-up
+like "which oil grade does *it* require?" is rewritten by one LLM call), then run exactly as before on
+that standalone question. ``ask`` and ``retrieve`` record a turn; ``explain`` is a dry run. The engines
+never learn a conversation exists — this facade, the composition root, applies the layer in front of
+them. ``history`` shows each question as typed and as understood; ``new_conversation`` / ``forget``
+start over. With it off (the default) every call is stateless, exactly as without the layer.
 """
 
 from __future__ import annotations
@@ -24,8 +33,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Self
 
-from tarnrag.contracts import CorpusStatus, RetrievalResult
-from tarnrag.core.engine.config import Settings
+from bausatz import ComponentFactory
+
+from tarnrag.contracts import ConversationTurn, CorpusStatus, RetrievalResult
+from tarnrag.conversation import (
+    Contextualization,
+    ConversationContext,
+    ConversationMemory,
+)
+from tarnrag.conversation.components.contextualizer import NO_LLM
+from tarnrag.core.engine.config import CONVERSATION_MEMORY, Settings
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.core.resources.llm import LanguageModel
 from tarnrag.generation.engine.engine import GenerationEngine
@@ -36,21 +53,33 @@ from tarnrag.ingestion.engine.types import DocumentStatus, DocumentSummary
 from tarnrag.report import Issue, Outcome, Report, Severity
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.engine.engine import RetrievalEngine
-from tarnrag.retrieval.types import SearchTrace
+from tarnrag.retrieval.types import Query, SearchTrace
 from tarnrag.storage.repository import DocumentRepository
 
 
 class TarnRag:
     """An ingestion + retrieval + generation session over one store (see the module docstring)."""
 
-    def __init__(self, settings: Settings | str | Path, llm: LanguageModel | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | str | Path,
+        llm: LanguageModel | None = None,
+        session_id: str | None = None,
+    ) -> None:
         """``settings`` is a ready ``Settings`` or the path to a JSON/YAML config to load (the ambient
         ``.env`` is ignored — the file is authoritative; OS env vars still supplement, e.g. the LLM key).
-        ``llm`` may be injected (tests / a custom backend)."""
+        ``llm`` may be injected (tests / a custom backend). ``session_id`` names the conversation to
+        join when conversation memory is enabled — resuming it if the store already holds its turns; it
+        overrides the config's ``conversation_memory.session_id``, and with neither set each ``open``
+        starts a fresh conversation. Ignored when memory is off (``session_id`` is then ``None``)."""
         if not isinstance(settings, Settings):
             settings = Settings.from_file(settings)
         self.settings = settings
         self._injected_llm = llm
+        self._llm: LanguageModel | None = None  # the LLM this facade built (shared by ask + the rewrite)
+        self._requested_session_id = session_id
+        self._memory: ConversationMemory | None = None
+        self._session_id: str | None = None  # the current conversation; None ⇔ memory is off
         self._repository: DocumentRepository | None = None
         self._embedder: Embedder | None = None
         self._ingestion: IngestionEngine | None = None
@@ -74,6 +103,18 @@ class TarnRag:
             self._retrieval = await RetrievalEngine.create(
                 self.settings, repository=self._repository, embedder=self._embedder
             )
+            # The conversation layer: built from its spec (validated here, so a bad one fails at open,
+            # not on the first follow-up). Off by default — then there is no session and every call
+            # below takes the stateless path untouched.
+            self._memory = ComponentFactory.get().create_as(
+                self.settings.components[CONVERSATION_MEMORY], ConversationMemory
+            )
+            if self._memory.enabled:
+                self._session_id = (
+                    self._requested_session_id
+                    or self._memory.config.session_id
+                    or ConversationMemory.new_session_id()
+                )
         except BaseException:
             await self.close()  # release the store we opened before re-raising (e.g. an index mismatch)
             raise
@@ -83,8 +124,12 @@ class TarnRag:
         """Release everything this facade built: the generation LLM (unless it was injected — an
         injected one is closed by its owner), the ingestion engine (its queue — the pgQueuer pool in
         distributed mode), and the one shared store."""
-        if self._generation is not None and self._injected_llm is None:
-            await self._generation.llm.aclose()  # the LLM _build_llm created
+        if self._injected_llm is None:
+            # The LLM this facade built — held by the generation engine once that exists, else built
+            # only for the conversation rewrite (a retrieve-only session with memory on).
+            built = self._generation.llm if self._generation is not None else self._llm
+            if built is not None:
+                await built.aclose()
         if self._ingestion is not None:
             await self._ingestion.aclose()  # the queue it built (+ the shared store, idempotently)
         if self._repository is not None:
@@ -152,8 +197,12 @@ class TarnRag:
 
     async def retrieve(self, query: str, *, top_k: int = 8) -> Outcome[list[RetrievalResult]]:
         """Retrieval only — the ranked, provenance-bearing passages. ``top_k`` mirrors the engine's
-        ``search_text`` default."""
-        return Outcome(await self._retrieval.search_text(query, top_k=top_k))
+        ``search_text`` default. With conversation memory on, a follow-up is first made standalone
+        against the conversation, and the question is recorded as a turn (no answer)."""
+        question, issues = await self._contextualize(query)
+        results = await self._retrieval.search(self._query(question, top_k=top_k))
+        await self._remember(question, kind="retrieve")
+        return Outcome(results, Report(tuple(issues)))
 
     async def explain(self, query: str, *, top_k: int = 8) -> Outcome[SearchTrace]:
         """Retrieval with its inner workings exposed — the same ranked results ``retrieve`` returns
@@ -161,12 +210,122 @@ class TarnRag:
         *why*: each retriever's candidates before fusion, the ranking at every pipeline stage
         (fused → merged → reranked → final) with per-component scores, and any routing decision.
         Output-free like the rest of the facade — it returns the data; a UI (the console's ``explain``)
-        renders it."""
-        return Outcome(await self._retrieval.explain_text(query, top_k=top_k))
+        renders it. With conversation memory on it is a **dry run**: the follow-up is made standalone
+        exactly as ``retrieve`` would (``trace.query`` is the executed query and carries the original
+        wording in its ``contextualized`` annotation), but nothing is recorded — a diagnostic never
+        changes the conversation."""
+        question, issues = await self._contextualize(query)
+        trace = await self._retrieval.explain(self._query(question, top_k=top_k))
+        return Outcome(trace, Report(tuple(issues)))
 
     async def ask(self, query: str) -> Outcome[GenerationResult]:
-        """Retrieval + generation — a grounded answer with a proof tree. Needs an LLM."""
-        return Outcome(await self._gen().answer_text(query))
+        """Retrieval + generation — a grounded answer with a proof tree. Needs an LLM. With conversation
+        memory on, a follow-up is first made standalone against the conversation (the reasoners, the
+        grounding check and the proof tree then work on that question — the conversation itself never
+        reaches the reader), and the turn is recorded with its answer and verdicts."""
+        generation = self._gen()  # first: no LLM ⇒ fail fast, before any read or retrieval
+        question, issues = await self._contextualize(query)
+        result = await generation.answer(self._query(question))
+        await self._remember(
+            question, kind="ask", answer=result.answer,
+            grounded=result.grounded, abstained=result.abstained,
+        )
+        return Outcome(result, Report(tuple(issues)))
+
+    # ---------------- conversation memory (opt-in; see the module docstring) ----------------
+
+    @property
+    def session_id(self) -> str | None:
+        """The conversation this facade is in — ``None`` when conversation memory is off."""
+        return self._session_id
+
+    async def history(self, last: int | None = None) -> Outcome[list[ConversationTurn]]:
+        """The current conversation, oldest first — each turn's question as typed
+        (``question``), as understood (``standalone_question``), and for an ``ask`` its answer and
+        verdicts. The whole stored transcript, not only the short-term window the rewriter reads;
+        ``last`` keeps the most recent turns. This is how a UI shows what a follow-up was understood as."""
+        if self._session_id is None:
+            return Outcome([], self._memory_off_report())
+        return Outcome(await self._memory.history(self._session_id, self._conversation_context(), last))
+
+    async def new_conversation(self) -> Outcome[str | None]:
+        """Start a fresh conversation: later calls no longer see the earlier turns. The value is the new
+        session id. The previous conversation is **not** deleted — its transcript stays in the store
+        (resumable by its id); use :meth:`forget` to remove turns."""
+        if self._session_id is None:
+            return Outcome(None, self._memory_off_report())
+        self._session_id = ConversationMemory.new_session_id()
+        return Outcome(self._session_id)
+
+    async def forget(self) -> Outcome[int]:
+        """Delete the current conversation's turns from the store; the value is how many were removed.
+        The conversation continues under the same id, with nothing remembered."""
+        if self._session_id is None:
+            return Outcome(0, self._memory_off_report())
+        return Outcome(await self._memory.forget(self._session_id, self._conversation_context()))
+
+    async def _contextualize(self, question: str) -> tuple[Contextualization, list[Issue]]:
+        """The question as it should be executed, plus any issue to report. Memory off ⇒ the question
+        as typed and nothing else happens (no store read, no LLM). A follow-up that could not be
+        resolved is used as typed and **reported** — never silently passed through."""
+        if self._session_id is None:
+            return Contextualization(original=question, standalone=question), []
+        result = await self._memory.contextualize(question, self._session_id, self._conversation_context())
+        if result.fallback is None:
+            return result, []
+        hint = f" (set {self.settings.llm.key_env_var()})" if result.fallback == NO_LLM else ""
+        message = (
+            f"conversation memory could not resolve this follow-up — {result.fallback}{hint}; "
+            "the question was used as typed"
+        )
+        return result, [Issue(message, Severity.WARNING, subject=question)]
+
+    @staticmethod
+    def _query(question: Contextualization, *, top_k: int = 8) -> Query:
+        """The ``Query`` an engine receives: the standalone text, carrying the ``contextualized``
+        annotation when it was rewritten (empty otherwise — then this is exactly the query the stateless
+        path builds). Built here because the conversation package never imports ``retrieval``."""
+        return Query(text=question.standalone, top_k=top_k, annotations=question.annotations())
+
+    async def _remember(
+        self,
+        question: Contextualization,
+        *,
+        kind: str,
+        answer: str | None = None,
+        grounded: bool | None = None,
+        abstained: bool | None = None,
+    ) -> None:
+        """Record a completed operation as a turn (only reached when the operation returned — one that
+        raised records nothing). A no-op with memory off."""
+        if self._session_id is None:
+            return
+        turn = ConversationTurn(
+            session_id=self._session_id,
+            kind=kind,
+            question=question.original,
+            standalone_question=question.standalone,
+            answer=answer,
+            grounded=grounded,
+            abstained=abstained,
+        )
+        await self._memory.remember(turn, self._conversation_context())
+
+    def _conversation_context(self) -> ConversationContext:
+        """The resources the conversation layer runs against: the one store (as the
+        ``ConversationStore`` port) + the shared LLM, or ``None`` when no key is configured."""
+        return ConversationContext(self._repository, self._llm_or_none())
+
+    @staticmethod
+    def _memory_off_report() -> Report:
+        return Report(
+            (
+                Issue(
+                    "conversation memory is disabled — set components.conversation_memory.enabled: true",
+                    Severity.WARNING,
+                ),
+            )
+        )
 
     def retrieval_context(self) -> RetrievalContext:
         """The shared ``(store, embedder)`` the retrieval pipelines run against — the seam the eval
@@ -186,17 +345,24 @@ class TarnRag:
         """The generation engine, built once over the shared retrieval engine + the configured LLM
         (the pipeline comes from ``Settings`` via ``GenerationEngine.assemble``)."""
         if self._generation is None:
-            llm = self._injected_llm or self._build_llm()
+            llm = self._llm_or_none()
+            if llm is None:
+                raise RuntimeError(
+                    f"generation needs an LLM key — set {self.settings.llm.key_env_var()} "
+                    "(the provider / model are in the config)"
+                )
             self._generation = GenerationEngine.assemble(self._retrieval, llm, self.settings)
         return self._generation
 
-    def _build_llm(self) -> LanguageModel:
-        if not self.settings.llm.resolved_api_key():
-            raise RuntimeError(
-                f"generation needs an LLM key — set {self.settings.llm.key_env_var()} "
-                "(the provider / model are in the config)"
-            )
-        return LanguageModel.create(self.settings.llm)
+    def _llm_or_none(self) -> LanguageModel | None:
+        """The one LLM this session uses — for generation and for the conversation rewrite alike: the
+        injected one, else the configured one built lazily on first need (no network until its first
+        ``complete``), else ``None`` when no key is configured. Built at most once."""
+        if self._injected_llm is not None:
+            return self._injected_llm
+        if self._llm is None and self.settings.llm.resolved_api_key():
+            self._llm = LanguageModel.create(self.settings.llm)
+        return self._llm
 
     async def _kind_change_warnings(self, files: list[Path]) -> list[Issue]:
         """A WARNING per file that is about to replace a stored document of a **different source kind**
