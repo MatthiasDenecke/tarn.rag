@@ -202,3 +202,12 @@ class ChunkProvenance(BaseModel):
     parent_chunk_id: str | None = None  # the section-parent's chunk id; resolved when chunks are persisted
     annotations: list[Annotation] = Field(default_factory=list)  # annotations overlapping the chunk
     table: Table | None = None  # set iff this chunk IS a table — carries cells/geometry for table_cells
+
+
+def is_retrieval_unit(provenance: ChunkProvenance | None) -> bool:
+    """Whether a chunk is searched — a leaf (``level`` 0, or a chunk with no tree provenance at all).
+    A section parent (``level`` > 0) is stored so the auto-merger can hydrate it, but it is never
+    embedded, sparse-indexed, or returned by a retriever: its text is its leaves' text again, so
+    retrieving both would hand the reader the same passage twice. The single definition the embed stage,
+    the sparse index, and the stores' ``level = 0`` search predicate agree on."""
+    return provenance is None or provenance.level == 0

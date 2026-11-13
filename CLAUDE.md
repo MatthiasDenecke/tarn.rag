@@ -30,7 +30,10 @@ GenerationEngine.create() → await answer → reason (retrieve↔read) → grou
 Design specs: `doc/FUNCTIONAL_REQUIREMENTS.md` (ingestion), `doc/ModusQ_RetrievalSubsystemSpec.md` +
 `doc/retrieval-architecture-design.md` (retrieval), and `doc/generation-architecture-design.md` (generation).
 Retrieval methods, generation steps, extractors, chunkers, and enrichers are all config-driven **Components**
-(the standalone [`bausatz`](https://pypi.org/project/bausatz/) package — `Component` + `ComponentFactory` + `Registry`, imported directly) composed by spec under `Settings.components`.
+(the standalone [`bausatz`](https://pypi.org/project/bausatz/) package, `>=0.3` — `Component` + `ComponentFactory` + `Registry`, imported directly) composed by spec under `Settings.components`.
+Container children are **typed Configs** (`list[Retriever.Config]`, `Chunker.Config`, …): a spec tree validates in one
+pass, and `_build_children` turns each child Config into a component with `factory.build_as(cfg, Family)`; a
+directly-constructed container calls `self.ensure_built()` before first use.
 
 ## Using the engines
 
@@ -155,16 +158,22 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   `DocumentRepository` (SQLAlchemy 2.0 Core, async): shared tables + dialect-agnostic CRUD in
   `base.py` (read-model assembly lives in its companion `read_assembly.py`, held as `repo.reads`);
   `postgres.py` / `sqlite.py` supply only the dialect hooks — `_driver_url`, `_vector_type`,
-  `_encode_vector` / `_decode_vector`, `_before_create_schema` / `_after_create_schema`,
+  `_encode_vector` / `_decode_vector`, `_dialect_insert` (the `ON CONFLICT` upsert construct),
+  `_before_create_schema` / `_after_create_schema`,
   `_index_chunk_text`, `_clear_chunk_index`, `_count_doc_embeddings`,
-  `_embedding_counts_by_document` — plus the `RetrievalStore` port (`dense_knn` / `sparse_search` /
-  `hydrate`). Postgres uses pgvector; SQLite uses sqlite-vec (`vec_chunks`) for dense
-  KNN + FTS5 for sparse. Selection is driven by `settings.database.document_url` (a `postgres` substring
+  `_embedding_counts_by_document` — plus the search half of the `RetrievalStore` port (`dense_knn` /
+  `sparse_search`; `hydrate` is shared Core in the base). Postgres uses pgvector; SQLite uses sqlite-vec
+  (`vec_chunks`) for dense KNN + FTS5 for sparse. Both sparse builders render one parse
+  (`core.text.lexical_query`: required phrases AND an OR of the remaining terms), so the dialects agree
+  on what a query means. Selection is driven by `settings.database.document_url` (a `postgres` substring
   → Postgres, else SQLite). Put shared logic in the base, dialect specifics in the hooks.
 - **Transactional guarantees & idempotency.** `store_document_with_chunks` / `store_chunks` /
   `store_embeddings` are atomic. Documents are keyed by `metadata['source_id']` (UNIQUE, **stable** —
   set per `ID_POLICY` = `uuid` | `caller`); re-ingesting upserts the document and replaces its
-  chunks/embeddings (delete chunks → cascade removes embeddings) — re-runs never duplicate. Each
+  chunks/embeddings (delete chunks → cascade removes embeddings) — re-runs never duplicate.
+  `store_chunks` likewise replaces a document's chunks (a retried Chunk job can't add a second set), chunk
+  ids are content-addressed (`uuid5(document, ordinal, content hash)`), and every upsert is one atomic
+  `INSERT … ON CONFLICT DO UPDATE` (no update-then-insert race between concurrent workers). Each
   document also stores a `content_hash` column (sha256 of submitted content); `find_by_content_hash`
   queries it for content dedup, independent of identity. `list_documents` (inventory + counts) and
   `delete_document` round out the document admin surface; `delete_document_jobs` clears the

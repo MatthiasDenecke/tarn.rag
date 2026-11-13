@@ -12,14 +12,18 @@ optional ``GroundingChecker`` and owns the flow:
 
 from __future__ import annotations
 
-from typing import Any, Literal
-
-from pydantic import Field
+from dataclasses import replace
+from typing import Literal
 
 from bausatz import Component, ComponentFactory
-from tarnrag.generation.components.assembler import EvidenceAssembler
+from pydantic import Field
+
+from tarnrag.generation.components.assembler import (
+    EvidenceAssembler,
+    ProvenanceAssembler,
+)
 from tarnrag.generation.components.grounding import GroundingChecker, Verdict
-from tarnrag.generation.components.reasoner import Reasoner
+from tarnrag.generation.components.reasoner import Reasoner, SingleHopReasoner
 from tarnrag.generation.context import GenerationContext
 from tarnrag.generation.types import GenerationResult
 from tarnrag.retrieval.types import Query
@@ -31,9 +35,9 @@ class GenerationPipeline(Component):
 
     class Config(Component.Config):
         class_name: Literal["generation_pipeline"] = "generation_pipeline"
-        reasoner: dict[str, Any] = Field(default_factory=lambda: {"class_name": "single_hop"})
-        assembler: dict[str, Any] = Field(default_factory=lambda: {"class_name": "provenance"})
-        grounding_checker: dict[str, Any] | None = None  # None ⇒ no verification (grounded stays True)
+        reasoner: Reasoner.Config = Field(default_factory=SingleHopReasoner.Config)
+        assembler: EvidenceAssembler.Config = Field(default_factory=ProvenanceAssembler.Config)
+        grounding_checker: GroundingChecker.Config | None = None  # None ⇒ no verification (grounded stays True)
         uncertain_is_grounded: bool = True  # how to collapse an UNCERTAIN verdict (lenient by default)
         # Abstention policy (γ-cap): an answer counts as grounded iff at least ``min_grounded`` of its
         # steps pass verification; below that, ``abstain`` decides refusal vs. a best-grounded flag.
@@ -51,16 +55,23 @@ class GenerationPipeline(Component):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         """Build the reasoner + assembler (+ optional grounding checker) children through the factory."""
-        self._reasoner = factory.create_as(self.config.reasoner, Reasoner)
-        self._assembler = factory.create_as(self.config.assembler, EvidenceAssembler)
+        self._reasoner = factory.build_as(self.config.reasoner, Reasoner)
+        self._assembler = factory.build_as(self.config.assembler, EvidenceAssembler)
         self._grounding = (
-            factory.create_as(self.config.grounding_checker, GroundingChecker)
+            factory.build_as(self.config.grounding_checker, GroundingChecker)
             if self.config.grounding_checker
             else None
         )
 
     async def answer(self, query: Query, ctx: GenerationContext) -> GenerationResult:
-        self._ensure_children()
+        self.ensure_built()
+        # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — on top of
+        # the caller's purpose, never instead of it (``grounds_generation`` requires ai_grounding_allowed and
+        # intersects the purpose's license classes with GENERATION_GROUNDING's, ModusQ §5.6: tighten, never
+        # widen). Every path that runs a GenerationPipeline (engine, facade, the generation evals) goes
+        # through here; the reasoners derive their sub-queries with ``replace``, so the flag reaches every
+        # search. Code that drives a Reasoner directly sets the flag itself (eval.layout.tatqa_numeric does).
+        query = replace(query, grounds_generation=True)
         reasoned = await self._reasoner.reason(query, ctx)
         if reasoned.abstained:  # a gate refused BEFORE the read — surface it; nothing to verify
             return GenerationResult(

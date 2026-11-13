@@ -84,9 +84,33 @@ SQLAlchemy 2.0 Core with dialect-specific behavior isolated to hooks, so the two
 behaviorally identical. The SQLite file is deliberately portable — a future C++ reader can open it
 directly.
 
+The structure-aware chunker emits a section tree: **leaf** chunks are the retrieval units (embedded,
+BM25-indexed, searched), while **section parents** are stored only so the auto-merger can swap a group
+of retrieved siblings for their whole section. A parent is never searched itself, so a section and its
+own fragments can't both reach the reader. A parent also gets no Embed job, so a sectioned document
+shows fewer embeddings than chunks.
+
+> **Upgrading an index built before leaf-only retrieval:** its section parents still have vectors and
+> BM25 rows. Searches already skip them (the `level = 0` predicate), but those rows keep skewing the
+> sparse index's document frequencies until the document is re-ingested. Re-ingest to refresh the
+> BM25 statistics.
+
 Writes are transactional and idempotent: documents are keyed by a **stable** `source_id`, and
 re-ingesting replaces chunks and embeddings rather than duplicating them. Identity (`ID_POLICY`) is
-separate from content — every document also stores a `content_hash` for dedup queries.
+separate from content — every document also stores a `content_hash` for dedup queries. The stored
+`documents.content` is the **cleaned** text (line endings, control characters and whitespace runs
+normalized; code and tables verbatim), because that's the text every chunk's char spans index into.
+The `content_hash` is still computed over the bytes you submitted.
+
+Chunk ids are **content-addressed**: a `uuid5` of the document id, the chunk's position and the hash of
+its text. A retried Chunk job therefore reproduces the ids its first attempt handed to the Embed jobs,
+and `store_chunks` **replaces** a document's chunks instead of appending to them. A re-ingest that
+changes a chunk's text gives that chunk a new id, so a citation to the old text can't silently resolve
+to the new one. Chunks in an index built before content-addressed ids keep their random ids until
+their document is re-ingested; nothing depends on the difference.
+
+A `source_id` repeated within one ingest call is ingested once, from its last occurrence. In embedded
+mode, concurrent ingest calls run one after the other, so two runs of one document never overlap.
 
 ## One embedder, fingerprinted
 
@@ -120,7 +144,11 @@ grounding checkers — all are config-driven Components composed by spec under `
 (the [catalog](../reference/components.md) lists them). Comparing methods — hybrid vs. dense-only,
 single-hop vs. decomposition — is a config edit, not a code change. Generation is an opt-in layer:
 retrieval works LLM-free, and license/scope filtering is enforced as a SQL pre-filter inside the
-retrievers.
+retrievers. Generation marks everything it retrieves as grounding an answer: on top of the caller's
+own purpose, never instead of it. A chunk ingested with `ai_grounding_allowed = false` can be
+retrieved but never grounds an answer, and generation's license classes are the purpose's
+intersected with `GENERATION_GROUNDING`'s — narrower, never wider. Anything the auto-merger brings
+in passes the same filter.
 
 ## Where the deep detail lives
 

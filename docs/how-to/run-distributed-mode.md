@@ -23,6 +23,10 @@ DATABASE__DOCUMENT_URL=postgresql://user:password@localhost:5432/tarn_rag_docs  
 DATABASE__QUEUE_URL=postgresql://user:password@localhost:5432/tarn_rag_queue     # the pgQueuer job queue
 ```
 
+Any Postgres URL form works for `DATABASE__DOCUMENT_URL` (`postgresql://`, or the `postgres://` alias
+many hosting providers hand out); the repository always drives it through asyncpg. A libpq
+`?sslmode=…` parameter is translated to asyncpg's `ssl=…` (same mode names, e.g. `require`).
+
 `Settings` fails fast on a mismatch: `MODE=distributed` requires a Postgres `document_url` **and** a
 `queue_url`; `MODE=embedded` requires SQLite (it is single-process by design). You cannot silently
 run distributed on the SQLite default.
@@ -40,11 +44,28 @@ instead of processing inline. Consume with one or more worker processes:
 python run_worker.py
 ```
 
-Worker tuning lives under `WORKER__*` (`WORKER__CONCURRENCY`, default 4;
-`WORKER__QUEUE_TIMEOUT_SECONDS`, default 30). pgQueuer owns the queue mechanics — SKIP LOCKED
+Worker tuning lives under `WORKER__*`: `WORKER__CONCURRENCY` (default 4) is how many batches one
+worker process runs at once, and `WORKER__QUEUE_TIMEOUT_SECONDS` (default 30) how long an idle worker
+waits before re-polling. Stage compute (parsing, embedding) runs in threads, so a busy worker still
+answers the queue's heartbeats. pgQueuer owns the queue mechanics — SKIP LOCKED
 dispatch, retries, NOTIFY wake-ups, dead-lettering. A worker that fails a batch re-raises, and the
 queue requeues the job; downstream jobs are only enqueued after upstream results are persisted, so
 a crash never loses or duplicates work (re-ingesting is idempotent by document id).
+
+### Sizing `WORKER__CONCURRENCY`
+
+- **Local ONNX embedding is already parallel.** ONNX Runtime sizes its thread pool to every core, so
+  one Embed batch keeps the machine busy on its own. At `WORKER__CONCURRENCY=4`, four of them compete
+  for the same cores: about four times as many runnable threads as cores, for little extra throughput.
+  For workers that embed locally, keep concurrency at 1–2 and add worker processes or hosts to scale.
+  Higher values pay off when stages mostly wait, as with an embedding API.
+- **Docling extractions take turns.** With the opt-in `docling` extractor, one worker process converts
+  one PDF at a time, whatever the concurrency, because docling doesn't promise that one converter is
+  safe to share between threads. Docling spreads each conversion over several threads itself.
+- **A single-slot worker holds one job in reserve.** pgQueuer requires a worker to allow at least twice
+  as many in-flight jobs as it claims per poll. So at `WORKER__CONCURRENCY=1` a worker claims 2 jobs and
+  runs 1, and the second waits, claimed, until the first finishes; no other worker can take it
+  meanwhile. Higher concurrency claims no more jobs than it runs.
 
 ## Notes
 

@@ -12,6 +12,11 @@ retrieval_pipeline:
   fuser: {class_name: identity}
 ```
 
+A spec is validated as a **whole tree** when its engine builds it: every nested child is resolved to
+its concrete config and checked in the same pass, so an unknown option or a misplaced child (say, a
+fuser in the `retrievers` list) fails at startup with its full path (`retrievers.0`), never on the
+first query. Each slot only accepts components of its own family — the sections below.
+
 Tags marked **(default)** are what you get without configuring anything.
 
 ## Ingestion
@@ -23,7 +28,7 @@ Tags marked **(default)** are what you get without configuring anything.
 | `pipeline` **(default)** | `Pipeline` | The stage DAG; default stages below, in order. |
 | `LoadAndParse` | `LoadAndParseStage` | Routes each `source_kind` to an extractor; produces a `StructuredDocument`. |
 | `Enrich` | `EnrichStage` | Runs document-phase enrichers (default: none). |
-| `CleanAndNormalize` | `CleanAndNormalizeStage` | Text cleanup. |
+| `CleanAndNormalize` | `CleanAndNormalizeStage` | Normalizes line endings, strips control characters, collapses whitespace (`collapse_whitespace`) in the structured document — every span remapped, code blocks and tables kept verbatim. The cleaned text is what gets stored, chunked, and embedded. |
 | `Chunk` | `ChunkStage` | Splits via its configured chunker (default `structure_aware`). |
 | `Embed` | `EmbedStage` | Embeds chunks with the shared embedder. |
 
@@ -44,7 +49,7 @@ A per-document `metadata['extractor']` override picks one inline.
 
 | Tag | Component | Notes |
 |---|---|---|
-| `structure_aware` **(default)** | `StructureAwareChunker` | Follows the `StructuredDocument` (headers, tables, geometry); emits `ChunkProvenance`. |
+| `structure_aware` **(default)** | `StructureAwareChunker` | Follows the `StructuredDocument` (headers, tables, geometry); emits `ChunkProvenance`. Leaves are the retrieval units; section parents are stored for `auto_merge`, never embedded or searched. |
 | `recursive` | `RecursiveCharacterChunker` | Classic size/overlap character splitting. |
 
 ### Enrichers (children of `Enrich`)
@@ -85,7 +90,7 @@ backfill past dropped chunks.
 
 | Tag | Component | Notes |
 |---|---|---|
-| `auto_merge` | `AutoMerger` | Recombines sibling chunks into their parent (`parent_chunk_id` provenance). |
+| `auto_merge` | `AutoMerger` | Recombines ≥ `min_siblings` sibling chunks into their section parent (`parent_chunk_id` provenance), repeating up the section tree; a parent must pass the query's license/scope/grounding filter. |
 
 ### Rerankers (optional slot)
 

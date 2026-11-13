@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import asyncio
 
-from tarnrag import RetrievalResult, TarnRag
-
 from examples.common import base_settings, example_db, require_model
+from tarnrag import RetrievalResult, TarnRag
 
 QUERIES = [
     "How do I check a storage tank for corrosion?",

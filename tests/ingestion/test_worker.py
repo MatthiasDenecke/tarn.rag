@@ -6,10 +6,10 @@ from tarnrag.contracts import PipelineItem
 from tarnrag.ingestion.engine.batch import BatchContext, BatchCoordinator
 from tarnrag.ingestion.engine.jobs import IngestionJob
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 from tarnrag.ingestion.engine.queue import InMemoryJobQueue
 from tarnrag.ingestion.engine.result_sink import PassthroughSink
 from tarnrag.ingestion.engine.worker import IngestionWorker
+from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
 
 class BoomStage(PipelineStage):
@@ -111,3 +111,43 @@ async def test_worker_reports_to_context_without_orchestrator():
     assert any(e[0] == "submit" for e in events)
     assert ("complete",) in events
     assert not any(e[0] == "fail" for e in events)
+
+
+class SlowStage(PipelineStage):
+    """A stage whose compute blocks its thread (stands in for PDF parsing / ONNX / sync HTTP)."""
+
+    def __init__(self):
+        super().__init__(PipelineStage.Config(name="Slow"))
+
+    def process(self, item):
+        import time
+
+        time.sleep(0.3)
+        yield item.derive()
+
+
+async def test_stage_compute_runs_off_the_event_loop(repo):
+    """HIGH-06: a blocking stage must not freeze the loop — other tasks (the queue's heartbeat / NOTIFY
+    listener, a concurrent retrieval) keep running while a batch computes."""
+    import asyncio
+
+    queue = InMemoryJobQueue(requeue_on_error=False)
+    orch = PipelineOrchestrator(PipelineDAG([SlowStage()]), queue, repo, {"Slow": PassthroughSink})
+    queue.set_handler(IngestionWorker(orch).handle_batch)
+    await orch.ingest_documents([PipelineItem(content="x", metadata={"source_id": "s1"})])
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    try:
+        await queue.run()
+    finally:
+        task.cancel()
+    assert ticks >= 10  # ~30 ticks in 0.3 s; a stage on the loop would allow ~0
+    assert (await repo.document_jobs("s1"))[0]["status"] == "completed"

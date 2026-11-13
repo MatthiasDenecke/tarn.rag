@@ -671,3 +671,35 @@ Verdict: S1's shipped deliverable is the *measured decision* plus the machinery 
 pipeline, both bridge retrievers, weighted RRF, and the `--s1` sweep are all in place and one
 config edit away, with the README documenting when routing pays (no-reranker deployments on
 mixed-form query sets) and when it doesn't (under the CE).
+
+---
+
+## P7a — sub-questions through hybrid + HyDE on the pool (2026-07-13)
+
+Setup: the Phase-2.5/3 protocol — HotpotQA over the shared ~10K-passage pool (`--corpus pool
+--corpus-limit 1000`), decomposition reasoner, gpt-4o-mini reader (also the hypothesis model),
+n=200, every leg's retrieval spec pinned via `--retrieval-spec`. The June pool cache predated B7
+and was refused at open (`schema_version 1 != 2` — the guard doing its job); the index was
+rebuilt from scratch under schema v2, with the DENSE leg as the A/A.
+
+| leg                        |   hit |    F1 |    EM |
+|----------------------------|------:|------:|------:|
+| DENSE (pinned; June's arm) | 0.475 | 0.607 | 0.485 |
+| HYBRID (P7a)               | 0.486 | 0.620 | 0.495 |
+| HYDE+SPARSE                | **0.514** | **0.665** | **0.525** |
+
+Findings:
+
+1. **A/A holds on the v2 rebuild**: dense lands inside the June band (hit 0.481–0.508, F1
+   0.610–0.633 across the recorded runs) — the schema-v2 rebuild moved nothing beyond the
+   documented ±0.02–0.03 nondeterminism.
+2. **Hybrid sub-questions are a within-noise nudge on wiki-QA** (+0.011 hit / +0.013 F1 /
+   +0.010 EM) — consistent with Option 1 (+0.015 F1); hybrid's measured home stays layout/table
+   corpora. It is the shipped default and free at query time; nothing here argues otherwise.
+3. **HyDE is the first retrieval lever to clear the noise band on the pool**: +0.039 hit /
+   +0.058 F1 / +0.040 EM over dense. The mechanism matches the wall's shape (Phase 2.5: the
+   2nd-hop passage resembles the *answer*, not the question) — the fake answer embeds where the
+   missing hop lives. Together with S1 (HyDE null on TAT-QA), the split is exactly as predicted:
+   HyDE pays where recall binds, not where precision does. Cost: one hypothesis call per
+   sub-question.
+4. The MOTHRAG F1 gap narrows from −0.148 (June's best, 0.633) to −0.116 — with the mini reader.

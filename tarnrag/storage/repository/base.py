@@ -27,16 +27,13 @@ from sqlalchemy import (
     insert,
     select,
     text,
-    update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from tarnrag.core.engine.config import DatabaseSettings
-from tarnrag.core.hashing import compute_content_hash
-from tarnrag.storage.repository import chunk_provenance as cp
 from tarnrag.contracts import (
     Candidate,
     Chunk,
+    ChunkRecord,
     ChunkStore,
     CorpusStatus,
     Document,
@@ -45,6 +42,9 @@ from tarnrag.contracts import (
     JobStatusSource,
     RetrievalStore,
 )
+from tarnrag.core.engine.config import DatabaseSettings
+from tarnrag.core.hashing import compute_content_hash
+from tarnrag.storage.repository import chunk_provenance as cp
 from tarnrag.storage.repository.read_assembly import ReadAssembler
 from tarnrag.storage.status import DocumentStatusReader
 
@@ -79,6 +79,11 @@ _CHUNK_PROVENANCE = {
     "ai_grounding_allowed": lambda md: int(md.get("ai_grounding_allowed", 1)),
     "available": lambda md: int(md.get("available", 1)),
 }
+
+
+# Namespace for the content-addressed chunk ids (``DocumentRepository._chunk_id``) — fixed forever:
+# changing it would re-key every chunk a re-ingest writes.
+_CHUNK_ID_NAMESPACE = uuid.UUID("3f0d1c2a-7b4e-5d6f-8a9b-0c1d2e3f4a5b")
 
 
 class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFactsSource):
@@ -127,7 +132,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         # The read-side assembly companion (child-table fetches + ChunkProvenance/ChunkRecord
         # construction) — split out of this class so it stays the port implementation.
         self.reads = ReadAssembler(
-            self.chunks, self.table_cells, self.chunk_annotations, self.method_chunks
+            self.chunks, self.table_cells, self.chunk_annotations, self.method_chunks, self.documents
         )
 
     # ---------------- dialect hooks (subclasses implement) ----------------
@@ -147,6 +152,11 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
     @abstractmethod
     def _decode_vector(self, stored) -> list[float]:
         """Inverse of _encode_vector when reading rows back."""
+
+    @abstractmethod
+    def _dialect_insert(self, table: Table) -> Any:
+        """The dialect's ``INSERT`` construct for ``table`` (``sqlalchemy.dialects.<dialect>.insert``) —
+        both SQLite and Postgres support ``on_conflict_do_update``, which ``_upsert`` builds on."""
 
     # dense_knn / sparse_search / hydrate are the RetrievalStore port (contracts.ports); each dialect
     # implements them. Schema hooks: default no-ops. The pgvector extension must exist *before* the
@@ -323,7 +333,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             async with self.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - a health probe reports any failure as unhealthy
             return False
 
     # ---------------- §8 index metadata ----------------
@@ -331,8 +341,8 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
     async def write_index_meta(self, meta: dict[str, str]) -> None:
         """
         Upsert §8 build/compatibility metadata (key/value) — e.g. the embedding-pipeline
-        fingerprint the retrieval store validates at ``open()``. Portable upsert (update, else
-        insert); takes a plain dict so the producer owns how the fingerprint is assembled.
+        fingerprint the retrieval store validates at ``open()``. Atomic upsert (``_upsert``); takes a
+        plain dict so the producer owns how the fingerprint is assembled.
         """
         async with self.engine.begin() as conn:
             for key, value in meta.items():
@@ -379,6 +389,14 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
                 ids.append(doc_id)
             return ids
 
+    async def refresh_documents(self, docs: list[Document]) -> list[str]:
+        """Upsert the document rows (content + provenance columns) in one transaction, **without** the
+        chunk/index replacement ``store_documents`` does. Safe to replay: a re-ingest's replacement already
+        happened when ``LoadAndParse`` stored the document, so whatever chunks exist by now index this
+        document's (deterministically) cleaned text."""
+        async with self.engine.begin() as conn:
+            return [await self._upsert_document(conn, self._doc_values(doc)) for doc in docs]
+
     async def store_document_with_chunks(
         self, doc: Document, chunks: list[Chunk]
     ) -> tuple[str, list[str]]:
@@ -393,7 +411,16 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             return doc_id, chunk_ids
 
     async def store_chunks(self, chunks: list[Chunk]) -> list[str]:
+        """Persist a batch of chunks atomically, **replacing** whatever chunks their documents already
+        hold — idempotent, so a retried Chunk job (a worker that died after this commit but before its
+        job was acked, or a requeue after a downstream failure) rewrites the same chunk set instead of
+        adding a second one. A document's chunks always arrive together (one Chunk job per document);
+        chunk ids are content-addressed (see ``_chunk_id``), so the retry reproduces the very ids its
+        first attempt handed to the Embed jobs."""
         async with self.engine.begin() as conn:
+            for document_id in dict.fromkeys(ch.parent_doc_id for ch in chunks):
+                await self._clear_chunk_index(conn, document_id)
+                await conn.execute(self.chunks.delete().where(self.chunks.c.document_id == document_id))
             return await self._insert_chunks(conn, None, chunks)
 
     # ``store_embeddings`` is dialect-owned (the ``ChunkStore`` port keeps it abstract here):
@@ -444,6 +471,13 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         # a general chunk-metadata bag is deferred. The method stays on the port as a latent capability.
         return None
 
+    async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
+        """§8 hydration (the ``RetrievalStore`` port): canonical text + provenance + license for
+        ``chunk_ids``, preserving input order. Shared by both dialects — it reads only normal tables
+        (``ReadAssembler.hydrate``: one ``chunks`` query + one per child table)."""
+        async with self.engine.connect() as conn:
+            return await self.reads.hydrate(conn, chunk_ids)
+
     # ---------------- dialect search-index hooks (vec0 / FTS live outside the FK graph) ----------------
 
     async def _index_chunk_text(
@@ -452,14 +486,14 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         """
         Index chunk text for sparse search. No-op by default; SQLite writes ``fts_chunks``.
         """
-        return None
+        return
 
     async def _clear_chunk_index(self, conn: AsyncConnection, document_id: str) -> None:
         """
         Drop a document's chunks from search indexes the FK CASCADE can't reach (vec0/FTS
         virtual tables). No-op by default (the embeddings table cascades).
         """
-        return None
+        return
 
     async def _count_doc_embeddings(self, conn: AsyncConnection, document_id: str) -> int:
         """
@@ -556,7 +590,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         status: str,
         error: str | None = None,
     ) -> None:
-        """Upsert a job's status row (portable: update, else insert)."""
+        """Upsert a job's status row (atomic: ``_upsert``)."""
         async with self.engine.begin() as conn:
             await self._upsert(
                 conn, self.job_status, self.job_status.c.job_id, job_id,
@@ -597,6 +631,13 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         async with self.engine.begin() as conn:
             return await self._delete_job_rows(conn, document_id)
 
+    async def delete_jobs(self, job_ids: list[str]) -> None:
+        """Remove the status rows of specific jobs — ones that never reached the queue."""
+        if not job_ids:
+            return
+        async with self.engine.begin() as conn:
+            await conn.execute(self.job_status.delete().where(self.job_status.c.job_id.in_(job_ids)))
+
     async def document_facts(self, document_id: str) -> DocumentFacts:
         """Persisted-data facts (presence + chunk/embedding counts) for this document."""
         async with self.engine.connect() as conn:
@@ -608,15 +649,15 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             ).first() is not None
             if not present:
                 return DocumentFacts(present=False, chunk_count=0, embedding_count=0)
-            chunk_count = (
+            chunk_count, leaf_count = (
                 await conn.execute(
-                    select(func.count())
+                    select(func.count(), func.count().filter(self.chunks.c.level == 0))
                     .select_from(self.chunks)
                     .where(self.chunks.c.document_id == document_id)
                 )
-            ).scalar_one()
+            ).one()
             embedding_count = await self._count_doc_embeddings(conn, document_id)
-        return DocumentFacts(True, chunk_count, embedding_count)
+        return DocumentFacts(True, chunk_count, embedding_count, leaf_count)
 
     async def corpus_stats(self) -> CorpusStatus:
         """A whole-repository snapshot: document / chunk / embedding counts plus the distribution of
@@ -742,15 +783,16 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         values: dict[str, Any],
         insert_extra: dict[str, Any] | None = None,
     ) -> None:
-        """Portable upsert (no dialect ``ON CONFLICT``): UPDATE the row keyed by
-        ``key_column == key_value`` with ``values``; if none matched, INSERT it (the key + ``values``
-        + any insert-only ``insert_extra``). The single home for the update-else-insert dance shared
-        by ``write_index_meta`` / ``record_job`` / ``_upsert_document``."""
-        res = await conn.execute(update(table).where(key_column == key_value).values(**values))
-        if res.rowcount == 0:
-            await conn.execute(
-                insert(table).values(**{key_column.name: key_value, **values, **(insert_extra or {})})
-            )
+        """Atomic upsert: ``INSERT`` the row (the key + ``values`` + any insert-only ``insert_extra``)
+        ``ON CONFLICT (key) DO UPDATE`` with ``values``. One statement, so two concurrent writers of
+        the same key (two workers stamping a fresh index's ``index_meta``, two ingests of one
+        ``source_id``) can't both miss an UPDATE and then collide on the INSERT — the race the old
+        update-else-insert pair had under READ COMMITTED. The single home for the upsert shared by
+        ``write_index_meta`` / ``record_job`` / ``_upsert_document``."""
+        stmt = self._dialect_insert(table).values(
+            **{key_column.name: key_value, **values, **(insert_extra or {})}
+        )
+        await conn.execute(stmt.on_conflict_do_update(index_elements=[key_column], set_=values))
 
     # §8 filtered retrieval over-fetch -------------------------------------
     _OVERFETCH_FACTOR = 4  # ModusQ §5.4: grow the candidate window ×4 until enough permitted hits
@@ -804,7 +846,7 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
         self, conn: AsyncConnection, document_id: str | None, chunks: list[Chunk]
     ) -> list[str]:
         # Pass 1: assign ids and map (document, ordinal) -> chunk_id, so a child resolves its parent.
-        ids = [ch.id or str(uuid.uuid4()) for ch in chunks]
+        ids = [ch.id or self._chunk_id(document_id or ch.parent_doc_id, ch) for ch in chunks]
         id_by_ordinal = {
             (document_id or ch.parent_doc_id, ch.chunk_index): cid for ch, cid in zip(chunks, ids)
         }
@@ -841,6 +883,15 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
                 await conn.execute(insert(self.chunk_annotations), annotation_rows)
             await self._index_chunk_text(conn, ids, chunks)
         return ids
+
+    @staticmethod
+    def _chunk_id(document_id: str, chunk: Chunk) -> str:
+        """A content-addressed chunk id: ``uuid5`` of (document, ordinal, content hash). Deterministic, so
+        re-running the same Chunk job reproduces the same ids (idempotent retries — in-flight Embed jobs
+        from the first attempt still point at real chunks); content-bearing, so a re-ingest that changes a
+        chunk's text gives it a new id and a citation to the old text can't silently resolve to new text."""
+        key = f"{document_id}\x1f{chunk.chunk_index}\x1f{compute_content_hash(chunk.content)}"
+        return str(uuid.uuid5(_CHUNK_ID_NAMESPACE, key))
 
     def _row_to_chunk(self, r) -> Chunk:
         # total_chunks is left at its None default: §8 stores ordinal, not the total.

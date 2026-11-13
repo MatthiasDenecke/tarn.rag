@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Self
 
 from bausatz import ComponentFactory
+
 from tarnrag.core.engine.config import GENERATION_PIPELINE, Settings, get_settings
 from tarnrag.core.resources.llm import LanguageModel
 from tarnrag.generation.context import GenerationContext
@@ -71,7 +72,10 @@ class GenerationEngine:
         return cls.assemble(retrieval, llm, settings, owns_resources=True)
 
     async def answer(self, query: Query) -> GenerationResult:
-        """Answer a question: retrieve, read, and return the answer + proof tree + evidence."""
+        """Answer a question: retrieve, read, and return the answer + proof tree + evidence. Retrieval is
+        marked ``grounds_generation`` (the pipeline enforces it, on top of the query's own purpose), so
+        chunks ingested with ``ai_grounding_allowed=False`` never reach the reader, and the license classes
+        are never wider than the query's purpose allows."""
         return await self._pipeline.answer(query, GenerationContext(self.retrieval, self.llm))
 
     async def answer_text(self, text: str) -> GenerationResult:

@@ -12,8 +12,9 @@ from abc import abstractmethod
 from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
-from tarnrag.contracts import PipelineItem
 from bausatz import Component, ComponentFactory
+
+from tarnrag.contracts import PipelineItem
 
 
 class PipelineStage(Component):
@@ -55,6 +56,13 @@ class PipelineStage(Component):
     @abstractmethod
     def process(self, item: PipelineItem) -> Iterator[Any]:
         """Transform one item; yield zero or more results."""
+
+    def accepts(self, item: PipelineItem) -> bool:
+        """Whether this stage has work for ``item`` — asked by the orchestrator before it enqueues a job, so
+        an item the stage would only discard never costs a queue round trip or a ``job_status`` row.
+        Pure (no I/O); default: every item. A stage that overrides it must also drop non-accepted items
+        itself (a direct ``process_batch`` call doesn't go through the orchestrator)."""
+        return True
 
     def process_batch(self, items: list[PipelineItem]) -> Iterator[Any]:
         """Batch entrypoint the worker calls (D3). Default maps ``process`` over the
@@ -104,8 +112,10 @@ class FilterStage(PipelineStage):
 
 class Pipeline(Component):
     """
-    An ordered list of stages — a container ``Component``. Its ``Config`` lists raw stage specs and
-    ``_build_children`` instantiates them via the factory, so a whole pipeline is itself a spec:
+    An ordered list of stages — a container ``Component``. Its ``Config`` lists the stage configs (typed
+    ``PipelineStage.Config`` children, so a malformed stage spec — or a stage's malformed child — fails
+    when the pipeline spec is validated, not later at build time) and ``_build_children`` builds them
+    through the factory, so a whole pipeline is itself a spec:
     ``{"class_name": "pipeline", "stages": [{"class_name": "Chunk", ...}, ...]}``. The
     DAG/orchestrator read ``.stages``; ``run`` threads items through in-process (local testing — the
     distributed engine runs stages individually via the worker). Two alternative constructors:
@@ -115,7 +125,7 @@ class Pipeline(Component):
 
     class Config(Component.Config):
         class_name: Literal["pipeline"] = "pipeline"
-        stages: list[dict[str, Any]]
+        stages: list[PipelineStage.Config]
 
     config: Pipeline.Config  # narrowed for type checkers (see Component)
 
@@ -124,9 +134,9 @@ class Pipeline(Component):
         self.stages: list[PipelineStage] = []
 
     def _build_children(self, factory: ComponentFactory) -> None:
-        """Instantiate the stage specs via the SAME factory, asserting each is a PipelineStage
-        (``create_as`` does the build + type check)."""
-        stages = [factory.create_as(spec, PipelineStage) for spec in self.config.stages]
+        """Build the (already-validated) stage configs via the SAME factory, asserting each is a
+        PipelineStage (``build_as`` does the build + type check)."""
+        stages = [factory.build_as(cfg, PipelineStage) for cfg in self.config.stages]
         if not stages:
             raise ValueError("Pipeline must have at least one stage")
         self.stages = stages

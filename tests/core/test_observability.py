@@ -85,7 +85,10 @@ async def test_structured_logging_timer_and_unknown_level(caplog):
 
 def test_create_dispatches_structured_logging():
     from tarnrag.core.engine.config import ObservabilitySettings
-    from tarnrag.core.engine.observability import Observability, StructuredLoggingObservability
+    from tarnrag.core.engine.observability import (
+        Observability,
+        StructuredLoggingObservability,
+    )
 
     obs = Observability.create(ObservabilitySettings(enabled=True, type="structured_logging"))
     assert isinstance(obs, StructuredLoggingObservability)

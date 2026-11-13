@@ -85,7 +85,7 @@ async def test_document_with_chunks_and_idempotency(repo):
     assert len(await repo.get_chunks_by_document(doc_id)) == 2
 
     # Re-ingesting the same source_id upserts the document (same id) and replaces chunks.
-    doc_id2, ids2 = await repo.store_document_with_chunks(
+    doc_id2, _ = await repo.store_document_with_chunks(
         Document(content="updated", metadata={"source_id": "s1"}),
         [_chunk("only", 0, 1)],
     )
@@ -226,6 +226,10 @@ async def test_document_status_and_jobs(repo):
     await repo.store_embeddings(
         [Embedding(chunk_id=cid, vector=[1.0, 0.0, 0.0])]
     )
+    # The data is all there, but its job is still queued — e.g. a re-ingest whose new run hasn't
+    # replaced the old data yet: in progress, not complete.
+    assert (await repo.document_status("s1"))["status"] == "in_progress"
+    await repo.record_job("s1", "j1", "LoadAndParse", "completed")
     assert await repo.document_status("s1") == {
         "document_id": "s1",
         "status": "complete",
@@ -316,6 +320,24 @@ async def test_store_document_is_atomic(repo, monkeypatch):
 
     # The upsert to "B" shared the same transaction, so it was rolled back: still "A".
     assert (await repo.get_document(doc_id)).content == "A"
+
+
+async def test_refresh_documents_rewrites_the_row_and_keeps_chunks_vectors_and_bm25(repo):
+    """``refresh_documents`` (the CleanAndNormalize sink's write) is row-only — unlike ``store_documents``,
+    it never replaces the document's chunks, so a replayed job can't wipe the index built after it."""
+    _, (cid,) = await repo.store_document_with_chunks(
+        Document(content="raw  text", metadata={"source_id": "s1", "content_hash": "h1"}),
+        [_chunk("tank inspection", 0, 1)],
+    )
+    await repo.store_embeddings([Embedding(chunk_id=cid, vector=[1.0, 0.0, 0.0])])
+    ids = await repo.refresh_documents(
+        [Document(content="raw text", metadata={"source_id": "s1", "content_hash": "h1"})]
+    )
+    assert ids == ["s1"] and (await repo.get_document("s1")).content == "raw text"
+    facts = await repo.document_facts("s1")
+    assert (facts.chunk_count, facts.embedding_count) == (1, 1)
+    assert [c.chunk_id for c in await repo.dense_knn([1.0, 0.0, 0.0], k=1)] == [cid]
+    assert [c.chunk_id for c in await repo.sparse_search("tank", k=1)] == [cid]
 
 
 async def test_dense_knn_and_hydrate(repo):
@@ -531,7 +553,7 @@ async def test_dense_knn_filter_by_license_class(repo):
 
 async def test_sparse_search_filter_drops_unavailable(repo):
     """The permitted-chunk filter applies to sparse retrieval too."""
-    _, (c1, c2) = await repo.store_document_with_chunks(
+    _, (_c1, c2) = await repo.store_document_with_chunks(
         Document(content="d", metadata={"source_id": "s1"}),
         [_chunk("tank inspection alpha", 0, 2, available=0), _chunk("tank inspection beta", 1, 2)],
     )
@@ -577,3 +599,120 @@ async def test_index_meta_round_trip(repo):
     await repo.write_index_meta({"schema_version": "2"})
     meta = await repo.index_meta()
     assert meta["schema_version"] == "2" and meta["embedding_config_fingerprint"] == "fp-1"
+
+
+def test_chunk_ids_are_a_persisted_contract():
+    """Chunk ids are stored, cited and handed to in-flight Embed jobs, so their derivation must never
+    change: ``uuid5(_CHUNK_ID_NAMESPACE, "<document>\\x1f<ordinal>\\x1f<sha256(content)>")``. A golden
+    value catches an accidental change to the namespace, the key format, or the hash."""
+    import uuid
+
+    from tarnrag.storage.repository.base import _CHUNK_ID_NAMESPACE, DocumentRepository
+
+    chunk = Chunk(parent_doc_id="manual-7", content="Check valve torque weekly.", chunk_index=3)
+    assert DocumentRepository._chunk_id("manual-7", chunk) == "f5f10a66-b5af-5df0-b453-669bc8f718e8"
+    assert _CHUNK_ID_NAMESPACE == uuid.UUID("3f0d1c2a-7b4e-5d6f-8a9b-0c1d2e3f4a5b")
+    key = "manual-7\x1f3\x1f" + _h("Check valve torque weekly.")
+    assert DocumentRepository._chunk_id("manual-7", chunk) == str(uuid.uuid5(_CHUNK_ID_NAMESPACE, key))
+
+
+async def test_store_chunks_is_idempotent_on_retry(repo):
+    """HIGH-03: a retried Chunk job (worker died after the commit, before the ack) rewrites the same chunk
+    set — same content-addressed ids, no second copy in ``chunks`` or the sparse index."""
+    await repo.store_document(Document(content="d", metadata={"source_id": "s1"}))
+
+    def batch(first_text: str = "alpha") -> list:  # what ChunkResultSink builds: parent_doc_id is set
+        return [
+            _chunk(text, i, 2).model_copy(update={"parent_doc_id": "s1"})
+            for i, text in enumerate([first_text, "beta"])
+        ]
+
+    first = await repo.store_chunks(batch())
+    second = await repo.store_chunks(batch())
+    assert first == second  # deterministic ids — in-flight Embed jobs still point at real chunks
+    assert (await repo.document_facts("s1")).chunk_count == 2
+    async with repo.engine.connect() as conn:
+        fts = (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0]
+    assert fts == 2
+    # Changed content at the same position is a different chunk (a stale citation can't resolve to it).
+    [changed, _] = await repo.store_chunks(batch("alpha v2"))
+    assert changed != first[0] and await repo.get_chunk(first[0]) is None
+
+
+async def test_upsert_inserts_then_updates_in_place(repo):
+    await repo.write_index_meta({"k": "1"})
+    await repo.write_index_meta({"k": "2", "j": "x"})
+    assert await repo.index_meta() == {"k": "2", "j": "x"}
+    await repo.record_job("s1", "j1", "Chunk", "queued")
+    await repo.record_job("s1", "j1", "Chunk", "failed", "boom")  # same job: updated, not duplicated
+    assert await repo.document_jobs("s1") == [
+        {"job_id": "j1", "stage_name": "Chunk", "status": "failed", "error": "boom"}
+    ]
+
+
+def test_postgres_driver_url_pins_asyncpg_for_every_postgres_scheme():
+    """HIGH-05: ``postgres://`` (the alias Heroku / Render / Supabase hand out) and a sync-driver URL both
+    become asyncpg URLs; the password survives."""
+    pytest.importorskip("pgvector")
+    from tarnrag.storage.repository.postgres import PostgresRepository
+
+    repo = PostgresRepository("postgresql://u:p@h/db", embedding_dimension=3)  # no connection is made
+    for url in ("postgres://u:p@h:5432/db", "postgresql://u:p@h:5432/db", "postgresql+psycopg2://u:p@h:5432/db"):
+        assert repo._driver_url(url) == "postgresql+asyncpg://u:p@h:5432/db"
+
+
+def test_postgres_driver_url_maps_libpq_sslmode_to_asyncpg_ssl():
+    """A hosted URL's ``?sslmode=require`` would reach ``asyncpg.connect`` as an unknown keyword
+    (``TypeError: ... unexpected keyword argument 'sslmode'``); it becomes ``ssl``, other parameters
+    are kept, and an explicit ``ssl`` wins."""
+    pytest.importorskip("pgvector")
+    from sqlalchemy.engine import make_url
+
+    from tarnrag.storage.repository.postgres import PostgresRepository
+
+    repo = PostgresRepository("postgresql://u:p@h/db", embedding_dimension=3)  # no connection is made
+    query = make_url(repo._driver_url("postgres://u:p@h/db?sslmode=require&application_name=x")).query
+    assert dict(query) == {"ssl": "require", "application_name": "x"}
+    query = make_url(repo._driver_url("postgresql://u:p@h/db?sslmode=require&ssl=verify-full")).query
+    assert dict(query) == {"ssl": "verify-full"}
+
+
+async def test_hydrate_reads_the_chunks_table_once(repo):
+    """MED-08: text, licensing and provenance come back from ONE ``chunks`` query (the provenance columns
+    ride along) — not a second ``chunks`` round trip for the provenance."""
+    from sqlalchemy import event
+
+    _, ids = await repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s1"}), [_chunk("a", 0, 2), _chunk("b", 1, 2)]
+    )
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(repo.engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        records = await repo.hydrate(list(ids))
+    finally:
+        event.remove(repo.engine.sync_engine, "before_cursor_execute", _record)
+    assert [r.chunk_id for r in records] == list(ids)
+    assert sum(1 for s in statements if "FROM chunks" in s) == 1
+
+
+async def test_clearing_a_document_is_not_bounded_by_the_bind_parameter_limit(repo):
+    """MED-08: clearing a document's search-index rows uses a subquery, so it doesn't expand one bind
+    parameter per chunk (which fails past SQLITE_MAX_VARIABLE_NUMBER — lowered here to make it cheap)."""
+    import sqlite3
+
+    from sqlalchemy import event
+
+    @event.listens_for(repo.engine.sync_engine, "connect")
+    def _low_limit(dbapi_connection, _record):
+        dbapi_connection.driver_connection._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 50)
+
+    await repo.engine.dispose()  # new connections pick up the low limit
+    chunks = [_chunk(f"chunk {i}", i, 120) for i in range(120)]
+    await repo.store_document_with_chunks(Document(content="d", metadata={"source_id": "big"}), chunks)
+    assert await repo.delete_document("big") is True
+    async with repo.engine.connect() as conn:
+        assert (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0] == 0

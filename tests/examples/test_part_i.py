@@ -11,14 +11,17 @@ isolated store, assert on the returned data.
 
 from __future__ import annotations
 
-import pytest
-
 import json
 
+import pytest
+
 from examples.part_i.example_01 import ingestion, retrieval
-from examples.part_i.example_02 import ingestion as ingestion_02, retrieval as retrieval_02
-from examples.part_i.example_03 import evaluation as evaluation_03, ingestion as ingestion_03
-from examples.part_i.example_04 import generation as generation_04, ingestion as ingestion_04
+from examples.part_i.example_02 import ingestion as ingestion_02
+from examples.part_i.example_02 import retrieval as retrieval_02
+from examples.part_i.example_03 import evaluation as evaluation_03
+from examples.part_i.example_03 import ingestion as ingestion_03
+from examples.part_i.example_04 import generation as generation_04
+from examples.part_i.example_04 import ingestion as ingestion_04
 from tarnrag.core.resources.llm import StaticLanguageModel
 from tarnrag.eval import by_query_type
 

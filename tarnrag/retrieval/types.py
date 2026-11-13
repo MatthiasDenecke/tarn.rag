@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from tarnrag.contracts import Annotation, Candidate, ChunkFilter, MethodRef, RetrievalResult
+from tarnrag.contracts import (
+    Annotation,
+    Candidate,
+    ChunkFilter,
+    MethodRef,
+    RetrievalResult,
+)
 
 
 class Purpose(str, Enum):
@@ -43,14 +49,20 @@ class Query:
     sparse_k: int = 50  # candidate window for the sparse (BM25 / tsvector) retriever
     query_type: str = ""  # headline classification label; the router's route key
     annotations: list[Annotation] = field(default_factory=list)  # the classifier's rich findings
+    # The results will ground an LLM's output (generation sets this; the caller's ``purpose`` is kept).
+    # ADDITIVE, never a replacement for the purpose: it requires ``ai_grounding_allowed`` on top, and a
+    # license policy intersects the purpose's classes with the ``GENERATION_GROUNDING`` ones — so grounding
+    # can only tighten what the caller's own purpose may see, never widen it.
+    grounds_generation: bool = False
 
     def permitted_filter(self) -> ChunkFilter:
         """The permitted-chunk filter for this query (ModusQ §5.6) — available-only by default, grounding
-        required for ``GENERATION_GROUNDING``, restricted to ``scope`` unless it is ``ALL``. The retrievers
-        pass it into the store so disallowed chunks are dropped before ``top_k`` (with over-fetch), instead
-        of truncating first and filtering after (which could under-return for a tight scope)."""
+        required for ``GENERATION_GROUNDING`` or a query that ``grounds_generation``, restricted to ``scope``
+        unless it is ``ALL``. The retrievers pass it into the store so disallowed chunks are dropped before
+        ``top_k`` (with over-fetch), instead of truncating first and filtering after (which could
+        under-return for a tight scope)."""
         return ChunkFilter(
-            require_grounding=self.purpose == Purpose.GENERATION_GROUNDING,
+            require_grounding=self.grounds_generation or self.purpose == Purpose.GENERATION_GROUNDING,
             method_scope=self._scope_refs(),
         )
 
@@ -94,7 +106,15 @@ class SearchTrace:
     query: Query
     per_retriever: list[RetrieverCandidates] = field(default_factory=list)
     stages: list[SearchStage] = field(default_factory=list)
-    routing: tuple[str, str] | None = None  # (query_type, route_key) when a router dispatched
+    # Each router's dispatch decision, outermost first — ``(query_type, route_key)`` per router passed
+    # through; a nested router appends its own, so the whole path is visible, not just the last hop.
+    route_path: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def routing(self) -> tuple[str, str] | None:
+        """The decision of the router that picked the pipeline which actually ran (the innermost one);
+        ``None`` when no router dispatched. See ``route_path`` for every hop."""
+        return self.route_path[-1] if self.route_path else None
 
     def record_retrievers(self, keys: list[str], candidate_lists: list[list[Candidate]]) -> None:
         """Snapshot each retriever's pre-fusion candidates (paired key → candidate list)."""

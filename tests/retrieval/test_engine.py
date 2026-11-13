@@ -2,17 +2,31 @@
 
 import pytest
 
-from tarnrag.contracts import IndexMeta
 from tarnrag.contracts import (
-    Candidate, Chunk, ChunkFilter, ChunkProvenance, ChunkRecord, Document, Embedding, MethodRef,
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    ChunkProvenance,
+    ChunkRecord,
+    Document,
+    Embedding,
+    IndexMeta,
+    MethodRef,
     RetrievalResult,
 )
 from tarnrag.core.engine.config import RETRIEVAL_PIPELINE, Settings
-from tarnrag.retrieval.components.fuser import IdentityFuser, RRFFuser
 from tarnrag.retrieval import (
-    AutoMerger, CrossEncoderReranker, DefaultLicensePolicy, Query, RetrievalContext, RetrievalEngine,
-    RetrievalError, RetrievalPipeline, SearchTrace,
+    AutoMerger,
+    CrossEncoderReranker,
+    DefaultLicensePolicy,
+    Query,
+    RetrievalContext,
+    RetrievalEngine,
+    RetrievalError,
+    RetrievalPipeline,
+    SearchTrace,
 )
+from tarnrag.retrieval.components.fuser import IdentityFuser, RRFFuser
 from tarnrag.retrieval.types import Purpose
 
 FINGERPRINT = "fp-123"
@@ -149,14 +163,14 @@ def test_retriever_keys_disambiguate_duplicates():
             retrievers=[{"class_name": "dense"}, {"class_name": "dense"}, {"class_name": "sparse"}]
         )
     )
-    pipe._ensure_children()
+    pipe.ensure_built()
     assert pipe._retriever_keys() == ["dense", "dense#1", "sparse"]  # duplicate disambiguated by suffix
     named = RetrievalPipeline(
         RetrievalPipeline.Config(
             retrievers=[{"class_name": "dense", "name": "primary"}, {"class_name": "dense", "name": "backup"}]
         )
     )
-    named._ensure_children()
+    named.ensure_built()
     assert named._retriever_keys() == ["primary", "backup"]  # explicit names used as-is
 
 
@@ -311,7 +325,8 @@ async def test_auto_merger_keeps_leaves_when_parent_unavailable():
             )]
 
     out = await AutoMerger(AutoMerger.Config()).merge(
-        [_leaf("l1", -1.0), _leaf("l2", -2.0)], RetrievalContext(store=_FakeStore(), embedder=None)
+        Query(text="q"), [_leaf("l1", -1.0), _leaf("l2", -2.0)],
+        RetrievalContext(store=_FakeStore(), embedder=None),
     )
     assert [r.chunk_id for r in out] == ["l1", "l2"]
 

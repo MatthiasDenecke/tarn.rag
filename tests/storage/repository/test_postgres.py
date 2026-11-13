@@ -17,7 +17,15 @@ import os
 import pytest
 from sqlalchemy import insert
 
-from tarnrag.contracts import Chunk, ChunkFilter, ChunkProvenance, Document, Embedding, MethodRef, Span
+from tarnrag.contracts import (
+    Chunk,
+    ChunkFilter,
+    ChunkProvenance,
+    Document,
+    Embedding,
+    MethodRef,
+    Span,
+)
 
 PG_URL = os.environ.get("TARNRAG_TEST_POSTGRES_URL", "")
 pytestmark = [
@@ -54,7 +62,7 @@ async def _index(repo):
                 parent_doc_id="s1", content="storage tank corrosion inspection", chunk_index=0,
                 total_chunks=2, metadata={"locator": "§6.4"},
                 provenance=ChunkProvenance(
-                    content_hash="h0", header_path=["Safety"], level=1, geometry=[Span(start=5, end=8)]
+                    content_hash="h0", header_path=["Safety"], level=0, geometry=[Span(start=5, end=8)]
                 ),
             ),
             Chunk(parent_doc_id="s1", content="quokka marsupial", chunk_index=1, total_chunks=2, metadata={}),
@@ -91,14 +99,37 @@ async def test_store_embeddings_upserts_on_chunk_id(pg_repo):
 async def test_dense_sparse_hydrate_roundtrip(pg_repo):
     a, b = await _index(pg_repo)
     # pgvector cosine KNN: the [1,0,0] query is nearest the tank chunk.
-    assert [c.chunk_id for c in await pg_repo.dense_knn([1.0, 0.0, 0.0], 2)][0] == a
+    assert (await pg_repo.dense_knn([1.0, 0.0, 0.0], 2))[0].chunk_id == a
     # tsvector ts_rank_cd: "tank inspection" surfaces the tank chunk.
-    assert [c.chunk_id for c in await pg_repo.sparse_search("tank inspection", 5)][0] == a
+    assert (await pg_repo.sparse_search("tank inspection", 5))[0].chunk_id == a
     # hydrate carries licensing + layout-aware provenance (the shared Core _chunk_provenance path).
     recs = {r.chunk_id: r for r in await pg_repo.hydrate([a, b])}
     assert recs[a].locator == "§6.4" and recs[a].ai_grounding_allowed is True
-    assert recs[a].provenance.header_path == ["Safety"] and recs[a].provenance.level == 1
+    assert recs[a].provenance.header_path == ["Safety"] and recs[a].provenance.level == 0
     assert recs[a].provenance.geometry[0].start == 5
+
+
+async def test_section_parents_are_hydrated_but_never_searched(pg_repo):
+    """HIGH-01: a section parent (level > 0) is stored for the auto-merger to hydrate, but dense + sparse
+    search return retrieval units only — even from an index built when parents were still embedded."""
+    _, (leaf, parent) = await pg_repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s2"}),
+        [
+            Chunk(parent_doc_id="s2", content="valve torque check", chunk_index=1,
+                  metadata={"parent_ordinal": 0}),
+            Chunk(parent_doc_id="s2", content="Valves: valve torque check and more", chunk_index=0,
+                  provenance=ChunkProvenance(content_hash="p", header_path=["Valves"], level=1)),
+        ],
+    )
+    await pg_repo.store_embeddings([  # the parent's vector is what a pre-fix ingest would have written
+        Embedding(chunk_id=leaf, vector=[0.0, 0.0, 1.0]),
+        Embedding(chunk_id=parent, vector=[0.0, 0.0, 1.0]),
+    ])
+    assert [c.chunk_id for c in await pg_repo.dense_knn([0.0, 0.0, 1.0], 5)] == [leaf]
+    assert [c.chunk_id for c in await pg_repo.dense_knn([0.0, 0.0, 1.0], 5, ChunkFilter())] == [leaf]
+    assert [c.chunk_id for c in await pg_repo.sparse_search("valve torque", 5)] == [leaf]
+    [record] = await pg_repo.hydrate([parent])
+    assert record.provenance.level == 1  # still hydratable for the merger
 
 
 async def test_filter_drops_disallowed_and_scopes(pg_repo):
@@ -128,6 +159,15 @@ async def test_delete_cascades(pg_repo):
     assert not (await pg_repo.document_facts("s1")).present
 
 
+async def test_refresh_documents_keeps_chunks_and_vectors(pg_repo):
+    a, _ = await _index(pg_repo)
+    assert await pg_repo.refresh_documents([Document(content="d cleaned", metadata={"source_id": "s1"})]) == ["s1"]
+    assert (await pg_repo.get_document("s1")).content == "d cleaned"
+    facts = await pg_repo.document_facts("s1")
+    assert (facts.chunk_count, facts.embedding_count) == (2, 2)
+    assert [c.chunk_id for c in await pg_repo.sparse_search("tank corrosion", 1)] == [a]
+
+
 async def test_reingest_replaces_chunks(pg_repo):
     await _index(pg_repo)  # two chunks
     # Re-store the same source_id with one chunk -> idempotent replace (not a duplicate).
@@ -136,3 +176,37 @@ async def test_reingest_replaces_chunks(pg_repo):
         [Chunk(parent_doc_id="s1", content="only one now", chunk_index=0, total_chunks=1, metadata={})],
     )
     assert (await pg_repo.document_facts("s1")).chunk_count == 1
+
+
+async def test_concurrent_upserts_of_one_key_never_collide(pg_repo):
+    """HIGH-04: the old UPDATE-then-INSERT let two READ COMMITTED writers both miss the UPDATE and collide
+    on the INSERT (IntegrityError). ``INSERT … ON CONFLICT DO UPDATE`` is one atomic statement."""
+    import asyncio
+
+    for trial in range(5):
+        meta = [pg_repo.write_index_meta({f"k{trial}": str(i)}) for i in range(8)]
+        docs = [
+            pg_repo.store_document(Document(content=str(i), metadata={"source_id": f"race{trial}"}))
+            for i in range(8)
+        ]
+        results = await asyncio.gather(*meta, *docs, return_exceptions=True)
+        assert not [r for r in results if isinstance(r, Exception)]
+    assert len(await pg_repo.index_meta()) == 5
+
+
+async def test_sparse_is_recall_first_like_sqlite(pg_repo):
+    """HIGH-05: a natural-language question matches chunks holding only SOME of its words (OR — the
+    SQLite semantics), ranked by how many; a split identifier is still a required adjacent phrase."""
+    _, (rev, other, kit) = await pg_repo.store_document_with_chunks(
+        Document(content="d", metadata={"source_id": "s3"}),
+        [
+            Chunk(parent_doc_id="s3", content="Acme revenue grew in 2024", chunk_index=0),
+            Chunk(parent_doc_id="s3", content="revenue recognition policy", chunk_index=1),
+            Chunk(parent_doc_id="s3", content="6 bolts, 4 nuts and 2 washers per torque kit", chunk_index=2),
+        ],
+    )
+    hits = [c.chunk_id for c in await pg_repo.sparse_search("What was the revenue of Acme in 2024?", 5)]
+    assert hits[0] == rev and other in hits  # "what"/"was" appear nowhere — the AND builder found nothing
+    assert await pg_repo.sparse_search("torque 6.4.2", 5) == []  # 6 / 4 / 2 scattered ≠ the identifier
+    assert await pg_repo.sparse_search("!!! ...", 5) == []  # nothing usable ⇒ no query, no error
+    assert kit in [c.chunk_id for c in await pg_repo.sparse_search("torque kit", 5)]

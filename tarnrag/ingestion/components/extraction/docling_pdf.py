@@ -13,6 +13,8 @@ without text are skipped for now (text-only normalized text).
 
 from __future__ import annotations
 
+import contextlib
+import threading
 from typing import Any, Literal
 
 from tarnrag.contracts import (
@@ -40,15 +42,25 @@ class DoclingExtractor(Extractor):
     def __init__(self, config: DoclingExtractor.Config) -> None:
         super().__init__(config)
         self._conv = None  # the DocumentConverter — built + cached on first use (models load once)
+        # A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once. One lock both builds
+        # the converter once and serializes conversions on it: docling doesn't promise that concurrent
+        # ``convert`` calls on one converter are safe, and a converter per thread would load its layout and
+        # table models once per thread. Docling's models already spread one conversion across the cores.
+        self._lock = threading.Lock()
 
     def extract(self, source: Source) -> StructuredDocument:
         if not source.path:
             raise ValueError("the 'docling' extractor needs a document file path (source.path)")
-        return self._map(self._converter().convert(source.path).document, source)
+        with self._lock:
+            result = self._converter().convert(source.path)
+        return self._map(result.document, source)  # the mapping touches only this call's result
 
     def _converter(self):
+        """The cached converter; the caller holds ``self._lock``."""
         if self._conv is None:
-            from docling.document_converter import DocumentConverter  # heavy; lazily imported once
+            from docling.document_converter import (
+                DocumentConverter,  # heavy; lazily imported once
+            )
 
             self._conv = DocumentConverter()
         return self._conv
@@ -191,8 +203,6 @@ class DoclingExtractor(Extractor):
         size = getattr(pages.get(page_no), "size", None) if pages and page_no in pages else None
         height = getattr(size, "height", None) if size else None
         if height is not None:
-            try:
+            with contextlib.suppress(Exception):  # geometry is best-effort; fall back to raw coords
                 bbox = bbox.to_top_left_origin(height)
-            except Exception:  # noqa: BLE001 — geometry is best-effort; fall back to raw coords
-                pass
         return tuple(round(float(v), 2) for v in bbox.as_tuple())

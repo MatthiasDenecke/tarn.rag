@@ -27,14 +27,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from typing import Any, Literal
-
-from pydantic import Field
+from typing import Literal
 
 from bausatz import ComponentFactory
+from pydantic import Field
 
 from tarnrag.contracts import RetrievalResult, Table
-from tarnrag.generation.components.reasoner import ReasonedAnswer, ReasonedStep, Reasoner
+from tarnrag.generation.components.reasoner import (
+    ReasonedAnswer,
+    ReasonedStep,
+    Reasoner,
+    SingleHopReasoner,
+)
 from tarnrag.generation.context import GenerationContext
 from tarnrag.retrieval.types import Query
 
@@ -80,7 +84,7 @@ class TableLookupReasoner(Reasoner):
         class_name: Literal["table_lookup"] = "table_lookup"
         # The reasoner handling everything this one doesn't confidently resolve. ``None`` ⇒ refuse
         # (abstain) instead — the LLM-free posture the numeric eval pins.
-        fallback: dict[str, Any] | None = Field(default_factory=lambda: {"class_name": "single_hop"})
+        fallback: Reasoner.Config | None = Field(default_factory=SingleHopReasoner.Config)
         top_k: int = 8
         row_coverage: float = 0.5  # min fraction of a row label's tokens that must appear in the question
         refusal: str = "I can't resolve that from the available tables."
@@ -93,11 +97,11 @@ class TableLookupReasoner(Reasoner):
 
     def _build_children(self, factory: ComponentFactory) -> None:
         self._fallback = (
-            factory.create_as(self.config.fallback, Reasoner) if self.config.fallback else None
+            factory.build_as(self.config.fallback, Reasoner) if self.config.fallback else None
         )
 
     async def reason(self, query: Query, ctx: GenerationContext) -> ReasonedAnswer:
-        self._ensure_children()
+        self.ensure_built()
         operation, years = self._operation(query.text), self._years(query.text)
         if operation is None or len(years) < 2:
             return await self._pass_on(query, ctx, evidence=None)

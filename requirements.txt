@@ -3,11 +3,11 @@
 # install via pyproject (`pip install tarn-rag[...]`); keep new runtime deps in pyproject first and
 # mirror them here only so CI sees them.
 aiosqlite>=0.22.1
-bausatz>=0.1
+bausatz>=0.3,<0.4
 numpy>=2.4.6
 pydantic>=2.13.4
 pydantic-settings>=2.14.1
-sqlalchemy>=2.0.50
+sqlalchemy[asyncio]>=2.0.50
 sqlite-vec>=0.1.9
 pyyaml>=6.0
 pypdf>=6.12.2

@@ -9,7 +9,7 @@ omits (e.g. `ANTHROPIC_API_KEY`).
 | Command | Effect |
 |---|---|
 | `ingest <path> ...` | Ingest (or **re**-ingest) files; a directory ingests the files in it. The document id is the filename stem, so re-ingesting a file replaces it. |
-| `docs` | List ingested documents (id, chunks, embeddings). |
+| `docs` | List ingested documents (id, chunks, embeddings). Section-parent chunks are stored for auto-merge but not embedded, so a sectioned document shows fewer embeddings than chunks. |
 | `status` | Summarize the corpus — counts + document-length stats. |
 | `delete <id>` | Delete a document and everything derived from it. |
 | `retrieve <query>` | Retrieval only — the ranked passages. |

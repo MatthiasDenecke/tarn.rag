@@ -12,13 +12,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from tarnrag.core.exceptions import IngestionError
 from tarnrag.contracts import ChunkStore, PipelineItem
-from tarnrag.storage.repository import DocumentRepository
+from tarnrag.core.exceptions import IngestionError
 from tarnrag.ingestion.engine.batch import BatchContext, BatchCoordinator
 from tarnrag.ingestion.engine.jobs import Batch, IngestionJob
 from tarnrag.ingestion.engine.queue import JobEnqueuer
 from tarnrag.ingestion.engine.result_sink import ResultSink
+from tarnrag.storage.repository import DocumentRepository
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +89,30 @@ class PipelineOrchestrator(BatchCoordinator):
 
     async def ingest_documents(self, items: list[PipelineItem]) -> list[str]:
         """Enqueue one root job per document for the first stage. Returns the public
-        document_ids (== source_ids); job ids never leave the system."""
+        document_ids (== source_ids); job ids never leave the system.
+
+        A (re-)submission starts the document's job history afresh: the job_status rows of any earlier
+        ingest of the same id are cleared first, so a stale ``failed`` row from a run that has since been
+        superseded can't pin the document's status to ``failed`` forever. If the root job then can't be
+        enqueued, its row records ``failed`` (the caller gets the exception), so the document doesn't fall
+        back to reporting its old, superseded state.
+
+        A ``source_id`` repeated within one submission is ingested **once, from its last occurrence** — the
+        result of submitting the copies one after another. Running both would put two chunk sets for one
+        document into the same batch (one wave), and the returned ids still line up with ``items``."""
         first_stage = self.dag.stages[0].name
-        document_ids = []
-        for item in items:
+        document_ids = [item.metadata["source_id"] for item in items]
+        last = {document_id: item for document_id, item in zip(document_ids, items)}  # the last occurrence wins
+        for item in last.values():
             job = self._make_job(item, first_stage)
-            await self._enqueue(job)
-            document_ids.append(job.document_id)
+            await self.repository.delete_document_jobs(job.document_id)
+            try:
+                await self._enqueue(job)
+            except Exception as exc:
+                await self._record([job], "failed", f"enqueue failed: {exc}")
+                raise
         if self.obs:
-            self.obs.counter("ingest.documents", len(items))
+            self.obs.counter("ingest.documents", len(last))
         return document_ids
 
     def get_stage(self, stage_name: str):
@@ -131,10 +146,18 @@ class PipelineOrchestrator(BatchCoordinator):
         )
 
     async def _enqueue(self, job: IngestionJob) -> None:
+        """Record the job ``queued``, then hand it to the queue. The row comes first, so a fast worker's
+        ``processing`` can't be overwritten by a late ``queued``. If the hand-off fails, the job doesn't
+        exist, and neither may its row: a phantom ``queued`` row would hold the document ``in_progress``
+        forever (a fan-out failure is retried upstream, under new job ids)."""
         await self.repository.record_job(
             job.document_id, job.job_id, job.stage_name, "queued"
         )
-        await self.enqueuer.enqueue(job)
+        try:
+            await self.enqueuer.enqueue(job)
+        except Exception:
+            await self.repository.delete_jobs([job.job_id])
+            raise
         if self.obs:
             self.obs.counter("ingest.jobs_enqueued")
 
@@ -185,7 +208,10 @@ class _OrchestratorBatchContext(BatchContext):
         await self._orch._record(self._batch.jobs, "completed")
         if obs:
             obs.counter(f"stage.{self._tag}.completed")
-        # Fan-out (D1): one downstream job per produced item, per next stage.
+        # Fan-out (D1): one downstream job per produced item, per next stage — unless that stage has no
+        # work for the item (e.g. Embed skips section parents), which then never reaches the queue.
         for next_stage in self._orch.dag.get_downstream_stages(self._batch.stage_name):
+            stage = self._orch.dag.get_stage(next_stage)
             for item in self._produced:
-                await self._orch._enqueue(self._orch._make_job(item, next_stage))
+                if stage.accepts(item):
+                    await self._orch._enqueue(self._orch._make_job(item, next_stage))

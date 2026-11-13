@@ -1,9 +1,13 @@
 """The RoutingRetrievalPipeline: classify a query, then dispatch to the matching sub-pipeline."""
 
+from typing import Literal
+
 from bausatz import ComponentFactory
+
 from tarnrag.retrieval import (
     GenericQueryClassifier,
     Query,
+    QueryClassifier,
     RetrievalPipeline,
     RoutingRetrievalPipeline,
     Searcher,
@@ -68,7 +72,65 @@ async def test_unknown_type_falls_through_to_default():
     )
     q = Query(text="whatever this is")
     assert await router.search(q, None) == ["DEF"]
-    assert q.query_type == "generic" and len(q.annotations) == 1
+    assert dflt.seen.query_type == "generic" and len(dflt.seen.annotations) == 1  # the route saw it
+    assert q.query_type == "" and q.annotations == []  # classified on a copy: the caller's query is untouched
+
+
+class _LabelClassifier(QueryClassifier):
+    """A test classifier stamping one fixed label (and an annotation) — stands in for a second taxonomy."""
+
+    class Config(QueryClassifier.Config):
+        class_name: Literal["_test_label"] = "_test_label"
+
+    def __init__(self, label: str) -> None:
+        super().__init__(self.Config())
+        self.label = label
+
+    def classify(self, query, ctx) -> None:
+        query.query_type = self.label
+        self._annotate(query, "query_type", {"label": self.label})
+
+
+async def test_a_nested_router_runs_its_own_classifier():
+    """MED-02: the outer router's label is ITS route key — a nested router must classify by its own
+    taxonomy instead of dispatching on the outer label (which its route table doesn't know)."""
+    leaf, inner_default = _RecordingSearcher("INNER-LEAF"), _RecordingSearcher("INNER-DEFAULT")
+    inner = _router(_LabelClassifier("numeric"), {"numeric": leaf}, inner_default)
+    outer = _router(_LabelClassifier("table"), {"table": inner}, _RecordingSearcher("OUTER-DEFAULT"))
+    assert await outer.search(Query(text="total revenue 2019"), None) == ["INNER-LEAF"]
+    assert leaf.seen.query_type == "numeric"  # the inner classification, not the outer "table"
+    assert [a.value["label"] for a in leaf.seen.annotations] == ["table", "numeric"]  # both recorded
+
+
+async def test_the_trace_records_every_routing_hop():
+    """``explain`` shows the whole route path through nested routers, not just the last decision."""
+    from tarnrag.retrieval.types import SearchTrace
+
+    leaf = _RecordingSearcher("INNER-LEAF")
+    inner = _router(_LabelClassifier("numeric"), {"numeric": leaf}, _RecordingSearcher("INNER-DEFAULT"))
+    outer = _router(_LabelClassifier("table"), {"table": inner}, _RecordingSearcher("OUTER-DEFAULT"))
+    trace = SearchTrace(query=Query(text="q"))
+    await outer.search(trace.query, None, trace)
+    assert trace.route_path == [("table", "table"), ("numeric", "numeric")]
+    assert trace.routing == ("numeric", "numeric")  # the hop whose pipeline actually ran
+
+
+async def test_nesting_the_same_classifier_does_not_duplicate_its_annotation():
+    leaf = _RecordingSearcher("LEAF")
+    structural = StructuralQueryClassifier(StructuralQueryClassifier.Config())
+    inner = _router(structural, {"lexical": leaf}, _RecordingSearcher("INNER-DEFAULT"))
+    outer = _router(StructuralQueryClassifier(StructuralQueryClassifier.Config()), {"lexical": inner}, _RecordingSearcher("D"))
+    await outer.search(Query(text="torque spec 6.4.2"), None)
+    assert len(leaf.seen.annotations) == 1  # classified twice, recorded once
+
+
+async def test_a_supplied_query_type_passes_through_nested_routers():
+    """A caller-pinned query_type is the caller's routing decision — honored at every level."""
+    leaf = _RecordingSearcher("INNER-LEAF")
+    inner = _router(_LabelClassifier("numeric"), {"table": leaf}, _RecordingSearcher("INNER-DEFAULT"))
+    outer = _router(_LabelClassifier("other"), {"table": inner}, _RecordingSearcher("OUTER-DEFAULT"))
+    assert await outer.search(Query(text="x", query_type="table"), None) == ["INNER-LEAF"]
+    assert leaf.seen.annotations == []  # neither classifier ran
 
 
 def test_factory_builds_a_router_as_a_searcher():
@@ -91,5 +153,5 @@ def test_factory_builds_a_router_as_a_searcher():
 def test_default_router_is_just_the_default_pipeline():
     # All defaults (generic classifier, no routes, dense default): builds, and behaves as a single pipeline.
     router = ComponentFactory.get().create_as({"class_name": "routing_retrieval_pipeline"}, Searcher)
-    router._ensure_children()
+    router.ensure_built()
     assert router._routes == {} and isinstance(router._default, RetrievalPipeline)

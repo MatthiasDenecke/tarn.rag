@@ -15,13 +15,14 @@ injected index won't ``open()`` with a non-injecting embedder; the two are compa
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from typing import Literal
 
 from pydantic import Field
 
+from tarnrag.contracts import Embedding, PipelineItem, is_retrieval_unit
 from tarnrag.core.engine.config import EmbeddingSettings
-from tarnrag.contracts import Embedding, PipelineItem
 from tarnrag.ingestion.pipeline.pipeline import PipelineStage
 
 
@@ -29,7 +30,9 @@ class EmbedStage(PipelineStage):
     """
     Terminal stage: yields ``Embedding``s (not ``PipelineItem``s). ``process_batch`` groups items
     into ``embedding.batch_size``-sized embed calls; ``chunk_id`` comes from
-    ``metadata['chunk_id']`` (set by ChunkResultSink).
+    ``metadata['chunk_id']`` (set by ChunkResultSink). Only **retrieval units** are embedded: a section
+    parent (``provenance.level > 0``) is stored for the auto-merger to hydrate, never searched, so it gets
+    no vector (its text is its leaves' text again — embedding it would only crowd the index).
     """
 
     class Config(PipelineStage.Config):
@@ -42,6 +45,14 @@ class EmbedStage(PipelineStage):
     def __init__(self, config: EmbedStage.Config) -> None:
         super().__init__(config)
         self._embedder = None  # lazy; built on first use (or injected by tests)
+        # A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once, so its first Embed
+        # batches race the lazy build — the lock makes them share one embedder (one copy of the model).
+        self._embedder_lock = threading.Lock()
+
+    def accepts(self, item: PipelineItem) -> bool:
+        """Only retrieval units get a vector — the orchestrator never enqueues an Embed job for a section
+        parent."""
+        return is_retrieval_unit(item.provenance)
 
     def process(self, item: PipelineItem) -> Iterator[Embedding]:
         yield from self.process_batch([item])
@@ -51,6 +62,9 @@ class EmbedStage(PipelineStage):
         Embed items in ``embedding.batch_size`` groups, yielding one ``Embedding`` per chunk
         (``chunk_id`` taken from ``metadata['chunk_id']``).
         """
+        items = [it for it in items if self.accepts(it)]  # also when called directly, not via a job
+        if not items:
+            return
         embedder = self._get_embedder()
         embedding = self.config.embedding
         batch_size = embedding.batch_size
@@ -80,9 +94,9 @@ class EmbedStage(PipelineStage):
 
     def _get_embedder(self):
         if self._embedder is None:
-            from tarnrag.core.resources.embedder import Embedder
+            with self._embedder_lock:
+                if self._embedder is None:  # another thread may have built it while we waited
+                    from tarnrag.core.resources.embedder import Embedder
 
-            self._embedder = Embedder.create(
-                self.config.embedding, self.config.embedding_dimension
-            )
+                    self._embedder = Embedder.create(self.config.embedding, self.config.embedding_dimension)
         return self._embedder

@@ -25,27 +25,32 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from tarnrag.core.engine.config import INGESTION_PIPELINE, IdPolicy, Settings, get_settings
-from tarnrag.core.hashing import sha256_file, sha256_hex
-from tarnrag.core.engine.observability import Observability
-from tarnrag.core.engine.engine import Engine
-from tarnrag.core.exceptions import IngestionError
-from tarnrag.core.resources.embedder import Embedder
 from tarnrag.contracts import DocumentFactsSource, IndexMeta, PipelineItem
-from tarnrag.storage.repository import DocumentRepository
-from tarnrag.storage.status import DocumentStatusReader
+from tarnrag.core.engine.config import (
+    INGESTION_PIPELINE,
+    IdPolicy,
+    Settings,
+    get_settings,
+)
+from tarnrag.core.engine.engine import Engine
+from tarnrag.core.engine.observability import Observability
+from tarnrag.core.exceptions import IngestionError
+from tarnrag.core.hashing import sha256_file, sha256_hex
+from tarnrag.core.resources.embedder import Embedder
+from tarnrag.ingestion.components.extraction.load_parse import infer_source_kind
 from tarnrag.ingestion.engine.orchestrator import PipelineDAG, PipelineOrchestrator
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.engine.queue import (
     InMemoryJobQueue,
     JobConsumer,
     JobEnqueuer,
     PgQueuerJobQueue,
 )
-from tarnrag.ingestion.components.extraction.load_parse import infer_source_kind
+from tarnrag.ingestion.engine.result_sink import create_sink_registry
 from tarnrag.ingestion.engine.types import DocumentStatus, DocumentSummary
 from tarnrag.ingestion.engine.worker import IngestionWorker
-from tarnrag.ingestion.engine.result_sink import create_sink_registry
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
+from tarnrag.storage.repository import DocumentRepository
+from tarnrag.storage.status import DocumentStatusReader
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +88,8 @@ class IngestionEngine(Engine):
         self._auto_drain = auto_drain
         self._debug = debug
         self._id_policy = id_policy
-        # Serializes the embedded drain: two concurrent ingest() calls would otherwise interleave two
-        # run() loops over the one queue (splitting waves/batches arbitrarily between them).
+        # Serializes embedded submissions (enqueue + drain, see ``_submit``): two concurrent ingest() calls
+        # would otherwise interleave two run() loops over the one queue, or mix two runs into one wave.
         self._drain_lock = asyncio.Lock()
 
     # ----- construction -----
@@ -118,7 +123,11 @@ class IngestionEngine(Engine):
         pipeline = cls.build_pipeline(settings)
 
         if settings.MODE == "distributed":
-            queue: JobEnqueuer = await PgQueuerJobQueue.connect(settings.database.queue_url)
+            queue: JobEnqueuer = await PgQueuerJobQueue.connect(
+                settings.database.queue_url,
+                concurrency=settings.worker.concurrency,
+                dequeue_timeout_seconds=settings.worker.queue_timeout_seconds,
+            )
             auto_drain = False
         else:  # embedded — run the whole pipeline in this process
             queue = InMemoryJobQueue()
@@ -362,16 +371,22 @@ class IngestionEngine(Engine):
             )
 
     async def _submit(self, items: list[PipelineItem]) -> list[str]:
+        if not (self._auto_drain and isinstance(self._queue, JobConsumer)):
+            return await self._enqueue_documents(items)  # distributed: the workers process them
+        # Embedded: process the whole DAG in-process, one submission at a time. The lock covers the
+        # enqueue as well as the drain, so a concurrent ingest waits for this one to finish instead of
+        # adding its jobs to the running waves. Otherwise two runs of one document could share a batch
+        # (two chunk sets in one store_chunks call), and its job-history clear would wipe a run in flight.
+        async with self._drain_lock:
+            document_ids = await self._enqueue_documents(items)
+            await self._queue.run()
+        return document_ids
+
+    async def _enqueue_documents(self, items: list[PipelineItem]) -> list[str]:
         document_ids = await self.orchestrator.ingest_documents(items)
         if self.obs:
             self.obs.counter("ingestion.documents_queued", len(items))
             await self.obs.log("info", "documents queued", count=len(document_ids))
-        if self._auto_drain and isinstance(self._queue, JobConsumer):
-            # Embedded: process the whole DAG in-process. Single-flight (the lock): a concurrent ingest
-            # waits rather than starting a second run() loop over the one queue; if the first loop already
-            # drained the second call's jobs (enqueued above), its run() finds an empty queue and returns.
-            async with self._drain_lock:
-                await self._queue.run()
         return document_ids
 
     def _item(self, source_id: str, content: str, extra: dict[str, Any]) -> PipelineItem:
@@ -412,7 +427,7 @@ async def run_worker(settings: Settings | None = None) -> None:
     A distributed worker must use the SAME ``Settings`` — incl. ``components`` — as the producer."""
     engine = await IngestionEngine.create(settings)
     if not isinstance(engine._queue, JobConsumer):
-        raise RuntimeError("this engine has no consumable queue to run a worker on")
+        raise TypeError("this engine has no consumable queue (a JobConsumer) to run a worker on")
     worker = _attach_worker(engine._queue, engine.orchestrator, engine.obs)
     logger.info("Ingestion worker %s started", worker.worker_id)
     try:

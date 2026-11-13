@@ -74,7 +74,7 @@ class _BufferingSink(ResultSink):
 
 class PassthroughSink(_BufferingSink):
     """
-    For pure-transform stages with no storage target (e.g. CleanAndNormalize).
+    For pure-transform stages with no storage target (e.g. Enrich, which annotates the in-flight document).
     Persists nothing; produced items still flow downstream via the orchestrator.
     """
 
@@ -90,9 +90,31 @@ class DocumentResultSink(_BufferingSink):
 
     async def _persist(self, results: list[Any]) -> None:
         docs = [Document(content=item.content, metadata=item.metadata) for item in results]
-        doc_ids = await self.repo.store_documents(docs)  # one transaction for the whole batch
+        doc_ids = await self._store(docs)  # one transaction for the whole batch
         for item, doc_id in zip(results, doc_ids):
             item.metadata["doc_id"] = doc_id
+
+    async def _store(self, docs: list[Document]) -> list[str]:
+        return await self.repo.store_documents(docs)  # a (re-)ingest replaces the document's chunks
+
+
+class DocumentRefreshSink(DocumentResultSink):
+    """
+    After a document-phase stage that REWRITES the document text (CleanAndNormalize): re-persist the
+    document, so ``documents.content`` stays the text the chunks' char spans index into (the extractor's
+    raw text was stored by LoadAndParse, before cleaning). Only document-phase items — those carrying
+    ``item.document`` — are written; a chunk-phase item (a pipeline that cleans after chunking) passes
+    through untouched, so it can never be mistaken for a document. The write is a row-only refresh, so a
+    replayed job (at-least-once redelivery) leaves the chunks and vectors built after it in place.
+    """
+
+    async def _persist(self, results: list[Any]) -> None:
+        documents = [item for item in results if item.document is not None]
+        if documents:
+            await super()._persist(documents)
+
+    async def _store(self, docs: list[Document]) -> list[str]:
+        return await self.repo.refresh_documents(docs)
 
 
 class ChunkResultSink(_BufferingSink):
@@ -140,7 +162,7 @@ def create_sink_registry() -> dict[str, type[ResultSink]]:
     return {
         "LoadAndParse": DocumentResultSink,
         "Enrich": PassthroughSink,  # doc-phase enrichment annotates item.document; nothing to persist here
-        "CleanAndNormalize": PassthroughSink,
+        "CleanAndNormalize": DocumentRefreshSink,  # cleaned text replaces the raw extraction in documents
         "Chunk": ChunkResultSink,
         "Embed": EmbeddingResultSink,
     }

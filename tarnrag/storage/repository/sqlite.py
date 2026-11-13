@@ -13,8 +13,9 @@ Core, for two reasons:
 * The KNN query uses sqlite-vec's proprietary ``MATCH`` operator + synthetic ``distance`` column,
   which has no SQLAlchemy expression.
 
-A few statements that touch only the normal tables (e.g. ``hydrate``'s join, the ``chunk_id``
-lookups) are kept raw too, deliberately, so the whole sqlite-vec/FTS layer reads as one block.
+A few statements that touch only the normal tables (the over-fetch joins, the ``chunk_id``
+subqueries) are kept raw too, deliberately, so the whole sqlite-vec/FTS layer reads as one block.
+``hydrate`` reads only normal tables, so it is shared Core in the base (``ReadAssembler.hydrate``).
 """
 
 from __future__ import annotations
@@ -24,14 +25,21 @@ import re
 from pathlib import Path
 
 import sqlite_vec
-from sqlalchemy import Text, event
+from sqlalchemy import Table, Text, event
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from tarnrag.contracts import Candidate, Chunk, ChunkFilter, ChunkRecord, Embedding
-from tarnrag.core.text import looks_like_identifier, quoted_spans
+from tarnrag.contracts import (
+    Candidate,
+    Chunk,
+    ChunkFilter,
+    Embedding,
+    is_retrieval_unit,
+)
+from tarnrag.core.text import lexical_query
 from tarnrag.storage.repository.base import DocumentRepository
 
-_QUOTED_SPAN = re.compile(r'"[^"]*"')  # strip consumed quoted spans out of the OR remainder
+_WORD = re.compile(r"\w+")  # FTS5 unicode61 splits a phrase into these word pieces
 
 
 class SqliteRepository(DocumentRepository):
@@ -44,7 +52,7 @@ class SqliteRepository(DocumentRepository):
         super().__init__(connection_url, embedding_dimension)
 
         @event.listens_for(self.engine.sync_engine, "connect")
-        def _on_connect(dbapi_connection, _record):  # noqa: ANN001
+        def _on_connect(dbapi_connection, _record):
             # SQLite enforces foreign keys / ON DELETE CASCADE only when
             # ``PRAGMA foreign_keys=ON``, which is per-connection.
             cursor = dbapi_connection.cursor()
@@ -56,7 +64,7 @@ class SqliteRepository(DocumentRepository):
             self._load_sqlite_vec(dbapi_connection)
 
     @staticmethod
-    def _load_sqlite_vec(dbapi_connection) -> None:  # noqa: ANN001
+    def _load_sqlite_vec(dbapi_connection) -> None:
         """
         Load the sqlite-vec extension onto a freshly-opened connection (called from the
         per-connection ``connect`` event), so vec0 dense-KNN is available on every connection.
@@ -126,6 +134,9 @@ class SqliteRepository(DocumentRepository):
     def _decode_vector(self, stored) -> list[float]:
         return json.loads(stored)
 
+    def _dialect_insert(self, table: Table):
+        return sqlite_insert(table)
+
     async def store_embeddings(self, embeddings: list[Embedding]) -> list[str]:
         """
         §8: dense vectors live in the sqlite-vec ``vec_chunks`` virtual table, not the embeddings
@@ -147,25 +158,13 @@ class SqliteRepository(DocumentRepository):
         """
         Exact KNN over ``vec_chunks`` (sqlite-vec), nearest first. Raw SQL: ``MATCH`` and the
         synthetic ``distance`` column are sqlite-vec's proprietary query API (see module docstring).
-        With a ``filter`` the result is the ``k`` nearest *permitted* chunks: sqlite-vec picks its k
-        nearest before a join can filter, so we over-fetch a window, join ``chunks`` to drop disallowed
-        rows, and backfill (``_overfetch``, ModusQ §5.4).
+        The result is the ``k`` nearest *retrieval units* (leaf chunks, ``level = 0``) that pass
+        ``filter``: sqlite-vec picks its k nearest before a join can filter, so we over-fetch a window,
+        join ``chunks`` to drop the rest, and backfill (``_overfetch``, ModusQ §5.4). The leaf predicate
+        also holds for an index built before section parents stopped being embedded.
         """
         q = sqlite_vec.serialize_float32(query_vec)
-        if filter is None:
-            async with self.engine.connect() as conn:
-                rows = (
-                    await conn.exec_driver_sql(
-                        "SELECT chunk_id, distance FROM vec_chunks WHERE embedding MATCH ? "
-                        "ORDER BY distance LIMIT ?",
-                        (q, k),
-                    )
-                ).fetchall()
-            return [
-                Candidate(chunk_id=cid, rank=i + 1, raw_score=dist)
-                for i, (cid, dist) in enumerate(rows)
-            ]
-        where, params = self._chunk_filter_sql(filter, "c")
+        where, params = self._search_where(filter, "c")
         async with self.engine.connect() as conn:
             total = (await conn.exec_driver_sql("SELECT count(*) FROM vec_chunks")).fetchone()[0]
 
@@ -187,25 +186,12 @@ class SqliteRepository(DocumentRepository):
     ) -> list[Candidate]:
         """§8 sparse retrieval over FTS5 ``fts_chunks`` (BM25, best first). Raw SQL: ``MATCH`` + the
         ``bm25()`` rank are FTS5's query API. ``raw_score`` is the FTS5 BM25 value (lower = better).
-        A ``filter`` is applied as in :meth:`dense_knn` (over-fetch the top window, join ``chunks``, keep
-        permitted rows, backfill)."""
+        Restricted to retrieval units and ``filter`` as in :meth:`dense_knn` (over-fetch the top window,
+        join ``chunks``, keep the permitted leaves, backfill)."""
         match = self._fts_query(query_text)
         if not match:
             return []
-        if filter is None:
-            async with self.engine.connect() as conn:
-                rows = (
-                    await conn.exec_driver_sql(
-                        "SELECT chunk_id, bm25(fts_chunks) AS score FROM fts_chunks "
-                        "WHERE fts_chunks MATCH ? ORDER BY score LIMIT ?",
-                        (match, k),
-                    )
-                ).fetchall()
-            return [
-                Candidate(chunk_id=cid, rank=i + 1, raw_score=score)
-                for i, (cid, score) in enumerate(rows)
-            ]
-        where, params = self._chunk_filter_sql(filter, "c")
+        where, params = self._search_where(filter, "c")
         async with self.engine.connect() as conn:
             total = (await conn.exec_driver_sql("SELECT count(*) FROM fts_chunks")).fetchone()[0]
 
@@ -222,6 +208,13 @@ class SqliteRepository(DocumentRepository):
                 ).fetchall()
 
             return await self._overfetch(k, total, page)
+
+    @classmethod
+    def _search_where(cls, filter: ChunkFilter | None, alias: str) -> tuple[str, list]:
+        """The full search predicate over the joined ``chunks`` row: retrieval units only (a section
+        parent is hydrated, never searched) AND, when given, the permitted-chunk ``filter``."""
+        where, params = cls._chunk_filter_sql(filter, alias) if filter is not None else ("1", [])
+        return f"{alias}.level = 0 AND ({where})", params
 
     @staticmethod
     def _chunk_filter_sql(filter: ChunkFilter, alias: str) -> tuple[str, list]:
@@ -261,89 +254,44 @@ class SqliteRepository(DocumentRepository):
 
     @staticmethod
     def _fts_query(text: str) -> str:
-        """A safe FTS5 ``MATCH`` expression honoring exact-match intent (the same cues the structural
-        classifier labels lexical — ``core.text``):
+        """A safe FTS5 ``MATCH`` expression honoring exact-match intent — the FTS5 rendering of the shared
+        :func:`~tarnrag.core.text.lexical_query` parse (Postgres renders the same parse as a tsquery):
 
         - a double-quoted span is a REQUIRED phrase (tokens adjacent, in order);
         - an identifier whose punctuation splits under unicode61 (``6.4.2``, ``2024-01``, ``§6.4``) is a
           required phrase too — OR-ing its pieces would match them scattered anywhere in a chunk;
-        - everything else stays an OR of quoted tokens (recall-first, exactly as before).
+        - everything else stays an OR of quoted tokens (recall-first).
 
         Required parts are ``AND``-ed with the OR-group (explicit — FTS5's implicit AND only joins bare
         phrases, not a phrase with a parenthesized group); all tokens are quoted so query punctuation
-        can't trip the FTS5 parser. Empty ⇒ no match (caller returns nothing). Plain queries (no quotes,
-        no split identifiers) produce byte-identical expressions to the old builder."""
-        phrases = [
-            " ".join(pieces)
-            for span in quoted_spans(text)
-            if (pieces := re.findall(r"\w+", span.lower()))
-        ]
-        remainder = _QUOTED_SPAN.sub(" ", text)  # quoted spans are consumed — not re-OR-ed
-        or_tokens: list[str] = []
-        for token in remainder.split():
-            pieces = re.findall(r"\w+", token.lower())
-            if len(pieces) > 1 and looks_like_identifier(token):
-                phrases.append(" ".join(pieces))  # split identifier ⇒ adjacency is the meaning
-            else:
-                for piece in pieces:  # dedupe one at a time — a token like 20,000,000 repeats pieces
-                    if piece not in or_tokens:
-                        or_tokens.append(piece)
-        parts = [f'"{p}"' for p in phrases]
-        if or_tokens:
-            group = " OR ".join(f'"{t}"' for t in or_tokens)
+        can't trip the FTS5 parser. Empty ⇒ no match (caller returns nothing)."""
+        parsed = lexical_query(text)
+        parts = [f'"{" ".join(_WORD.findall(phrase.lower()))}"' for phrase in parsed.phrases]
+        if parsed.terms:
+            group = " OR ".join(f'"{t}"' for t in parsed.terms)
             parts.append(f"({group})" if parts else group)
         return " AND ".join(parts)
-
-    async def hydrate(self, chunk_ids: list[str]) -> list[ChunkRecord]:
-        """
-        Canonical text + provenance for the given chunk ids, preserving input order.
-        """
-        if not chunk_ids:
-            return []
-        marks = ",".join("?" * len(chunk_ids))
-        async with self.engine.connect() as conn:
-            rows = (
-                await conn.exec_driver_sql(
-                    "SELECT c.chunk_id, c.text, c.document_id, d.source_kind, d.standard_id, "
-                    "c.locator, c.license_class, c.ai_grounding_allowed, c.available FROM chunks c "
-                    "JOIN documents d ON c.document_id = d.document_id "
-                    f"WHERE c.chunk_id IN ({marks})",
-                    tuple(chunk_ids),
-                )
-            ).fetchall()
-            by_id = {r[0]: r for r in rows}
-            prov = await self.reads.chunk_provenance(conn, chunk_ids)
-            methods = await self.reads.methods_by_chunk(conn, chunk_ids)  # one query, not one per chunk
-            records = [
-                self.reads.create_chunk_record(r, methods.get(cid, []), prov.get(cid))
-                for cid in chunk_ids
-                if (r := by_id.get(cid)) is not None
-            ]
-        return records
 
     # ----- §8 search-index hooks (vec0 + FTS5 live outside the FK graph) -----
 
     async def _index_chunk_text(
         self, conn: AsyncConnection, ids: list[str], chunks: list[Chunk]
     ) -> None:
-        rows = [(cid, ch.content) for cid, ch in zip(ids, chunks)]
+        # Only retrieval units go into the sparse index — a section parent is hydrated, never searched
+        # (indexing its text again would also skew BM25's document frequencies).
+        rows = [(cid, ch.content) for cid, ch in zip(ids, chunks) if is_retrieval_unit(ch.provenance)]
         if rows:
             await conn.exec_driver_sql("INSERT INTO fts_chunks(chunk_id, text) VALUES (?, ?)", rows)
 
     async def _clear_chunk_index(self, conn: AsyncConnection, document_id: str) -> None:
-        old = [
-            r[0]
-            for r in (
-                await conn.exec_driver_sql(
-                    "SELECT chunk_id FROM chunks WHERE document_id = ?", (document_id,)
-                )
-            ).fetchall()
-        ]
-        if not old:
-            return
-        marks = ",".join("?" * len(old))
-        await conn.exec_driver_sql(f"DELETE FROM vec_chunks WHERE chunk_id IN ({marks})", tuple(old))
-        await conn.exec_driver_sql(f"DELETE FROM fts_chunks WHERE chunk_id IN ({marks})", tuple(old))
+        # A subquery, not an expanded id list: one bind parameter however many chunks the document has
+        # (an IN list of every chunk id hits SQLITE_MAX_VARIABLE_NUMBER on a large enough document).
+        for table in ("vec_chunks", "fts_chunks"):
+            await conn.exec_driver_sql(
+                f"DELETE FROM {table} WHERE chunk_id IN "
+                "(SELECT chunk_id FROM chunks WHERE document_id = ?)",
+                (document_id,),
+            )
 
     async def _count_doc_embeddings(self, conn: AsyncConnection, document_id: str) -> int:
         row = (

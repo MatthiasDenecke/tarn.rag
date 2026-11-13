@@ -22,8 +22,9 @@ import string
 from abc import abstractmethod
 from typing import Any, Literal
 
-from tarnrag.contracts import Annotation, Geometry
 from bausatz import Component
+
+from tarnrag.contracts import Annotation, Geometry
 from tarnrag.core.text import looks_like_identifier
 from tarnrag.retrieval.components.retriever import RetrievalContext
 from tarnrag.retrieval.types import Query
@@ -52,16 +53,18 @@ class QueryClassifier(Component):
         deterministic: bool = True,
     ) -> None:
         """Append one finding by this classifier to ``query.annotations``; ``producer`` is filled in.
-        ``span`` may mark the sub-region of the query text it applies to (char offsets into ``query.text``)."""
-        query.annotations.append(
-            Annotation(
-                producer=self.config.class_name,
-                type=type,
-                value=value,
-                span=span,
-                deterministic=deterministic,
-            )
+        ``span`` may mark the sub-region of the query text it applies to (char offsets into ``query.text``).
+        Idempotent: an identical finding already recorded isn't added again — so nesting routers that run
+        the same classifier (each router classifies; the annotations ride along) doesn't duplicate it."""
+        annotation = Annotation(
+            producer=self.config.class_name,
+            type=type,
+            value=value,
+            span=span,
+            deterministic=deterministic,
         )
+        if annotation not in query.annotations:
+            query.annotations.append(annotation)
 
 
 class GenericQueryClassifier(QueryClassifier):
@@ -87,12 +90,19 @@ class GenericQueryClassifier(QueryClassifier):
 # The identifier cue itself lives in ``core.text`` — shared with the sparse-query builders, so what this
 # classifier labels lexical is exactly what the FTS builder phrase-requires.
 _QUESTION_WORDS = frozenset(
-    "who what when where why how which whose whom is are was were do does did "
-    "can could should would will may might has have had".split()
+    [
+        "who", "what", "when", "where", "why", "how", "which", "whose", "whom", "is", "are", "was",
+        "were", "do", "does", "did", "can", "could", "should", "would", "will", "may", "might",
+        "has", "have", "had"
+    ]
 )
 _STOPWORDS = frozenset(
-    "a an the of to in on for and or but with at by from as into about than that this these those "
-    "be been being it its i we you they he she my your our their over under up down out".split()
+    [
+        "a", "an", "the", "of", "to", "in", "on", "for", "and", "or", "but", "with", "at", "by",
+        "from", "as", "into", "about", "than", "that", "this", "these", "those", "be", "been",
+        "being", "it", "its", "i", "we", "you", "they", "he", "she", "my", "your", "our", "their",
+        "over", "under", "up", "down", "out"
+    ]
 )
 
 

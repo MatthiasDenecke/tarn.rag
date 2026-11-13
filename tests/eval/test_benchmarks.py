@@ -115,7 +115,7 @@ def test_musique_item_carries_aliases_and_abstention():
 
 def test_alias_scoring_takes_the_max():
     """An answer matching an alias (not the primary gold) still scores a perfect F1/EM."""
-    from tarnrag.eval.generation import GenEvalQuery, GenerationResult, _score
+    from tarnrag.eval.generation import GenerationResult, GenEvalQuery, _score
 
     q = GenEvalQuery(text="q", answer="Miquette Giraudy", answer_aliases=["Giraudy"])
     scored = _score(q, GenerationResult(answer="Giraudy", abstained=False, grounded=True, evidence=[], proof=[]))
@@ -258,6 +258,7 @@ async def test_run_over_corpus_concurrency_preserves_results(tmp_path):
 
 def test_hybrid_retrieval_spec_builds():
     from bausatz import ComponentFactory
+
     from tarnrag.eval.benchmark_runner import HYBRID_RETRIEVAL
     from tarnrag.retrieval.pipeline.pipeline import RetrievalPipeline
 

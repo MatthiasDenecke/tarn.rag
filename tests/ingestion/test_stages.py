@@ -1,15 +1,19 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
+from bausatz import ComponentFactory
 from pydantic import ValidationError
 
 from tarnrag.contracts import ChunkProvenance, PipelineItem
-from bausatz import ComponentFactory
 from tarnrag.core.engine.config import EmbeddingSettings
-from tarnrag.ingestion.pipeline.pipeline import Pipeline
 from tarnrag.ingestion.components.chunking.chunk import ChunkStage
-from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
-from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.ingestion.components.enrichment.enrich import EnrichStage
 from tarnrag.ingestion.components.extraction.load_parse import LoadAndParseStage
+from tarnrag.ingestion.pipeline.clean_normalize import CleanAndNormalizeStage
+from tarnrag.ingestion.pipeline.embed import EmbedStage
+from tarnrag.ingestion.pipeline.pipeline import Pipeline
 
 
 def _item(content, **meta):
@@ -55,7 +59,9 @@ def test_chunk_splits_and_indexes():
 
 def test_chunk_validation():
     # The size/overlap validation lives on the recursive chunker's Config (pydantic).
-    from tarnrag.ingestion.components.chunking.recursive import RecursiveCharacterChunker
+    from tarnrag.ingestion.components.chunking.recursive import (
+        RecursiveCharacterChunker,
+    )
 
     with pytest.raises(ValidationError):
         RecursiveCharacterChunker.Config(chunk_size=0)
@@ -85,6 +91,44 @@ def test_embed_produces_embeddings_with_model_batching():
     assert all(len(e.vector) == 3 for e in embs)  # just the key + vector — identity is index-wide
     # batch_size=2 over 3 items -> two embed calls (two-tier batching)
     assert len(stage._embedder.calls) == 2
+
+
+def test_embed_skips_section_parents_even_when_handed_them_directly():
+    """The orchestrator never enqueues a parent for Embed (``accepts``); a direct call drops it too."""
+    stage = EmbedStage(EmbedStage.Config())
+    stage._embedder = _FakeEmbedder()
+    leaf = PipelineItem(content="leaf", metadata={"chunk_id": "c0"}, provenance=ChunkProvenance(content_hash="l"))
+    parent = PipelineItem(
+        content="section", metadata={"chunk_id": "p"}, provenance=ChunkProvenance(content_hash="p", level=1)
+    )
+    assert stage.accepts(leaf) and stage.accepts(_item("no provenance")) and not stage.accepts(parent)
+    assert [e.chunk_id for e in stage.process_batch([parent, leaf])] == ["c0"]
+    assert list(stage.process_batch([parent])) == [] and stage._embedder.calls == [["leaf"]]
+
+
+def test_concurrent_first_embed_batches_build_one_embedder(monkeypatch):
+    """A distributed worker runs up to WORKER__CONCURRENCY batches in threads at once, so its first Embed
+    batches all reach the lazy build together. They must share one embedder (one copy of the model)."""
+    from tarnrag.core.resources.embedder import Embedder
+
+    builds = []
+
+    def slow_create(embedding, embedding_dimension):
+        builds.append(threading.get_ident())
+        time.sleep(0.05)  # a model load: long enough for every thread to reach the check
+        return _FakeEmbedder()
+
+    monkeypatch.setattr(Embedder, "create", staticmethod(slow_create))
+    stage = EmbedStage(EmbedStage.Config())
+    start = threading.Barrier(4)
+
+    def first_batch(i):
+        start.wait()
+        return [e.chunk_id for e in stage.process_batch([_item(f"chunk {i}", chunk_id=f"c{i}")])]
+
+    with ThreadPoolExecutor(4) as pool:
+        assert list(pool.map(first_batch, range(4))) == [["c0"], ["c1"], ["c2"], ["c3"]]
+    assert len(builds) == 1
 
 
 def test_embed_injects_header_path_when_enabled():
@@ -153,7 +197,7 @@ def test_stage_built_from_dict_spec_via_component_factory():
     assert (chunk._chunker.config.chunk_size, chunk._chunker.config.overlap) == (16, 4)  # child built by the factory
     assert chunk.tag == "Chunk"  # the type tag (the sink/metrics key)
     assert chunk.name == "Chunk"  # unnamed ⇒ the bare tag; PipelineDAG adds the positional suffix
-    assert chunk.to_json()["class_name"] == "Chunk"  # round-trips back to a spec
+    assert chunk.to_dict()["class_name"] == "Chunk"  # round-trips back to a spec
 
 
 def test_pipeline_composition_doc_to_chunks():

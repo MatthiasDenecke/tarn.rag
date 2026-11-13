@@ -23,9 +23,15 @@ class ReadAssembler:
     """Assemble chunk read models over the §8 child tables (held by reference; defined in base)."""
 
     def __init__(
-        self, chunks: Table, table_cells: Table, chunk_annotations: Table, method_chunks: Table
+        self,
+        chunks: Table,
+        table_cells: Table,
+        chunk_annotations: Table,
+        method_chunks: Table,
+        documents: Table,
     ) -> None:
         self._chunks = chunks
+        self._documents = documents
         self._table_cells = table_cells
         self._chunk_annotations = chunk_annotations
         self._method_chunks = method_chunks
@@ -55,20 +61,55 @@ class ReadAssembler:
             if (rows := grouped.get(chunk.id)) and chunk.provenance is not None:
                 chunk.provenance.annotations = [cp.row_to_annotation(r) for r in rows]
 
-    async def chunk_provenance(
-        self, conn: AsyncConnection, chunk_ids: list[str]
-    ) -> dict[str, ChunkProvenance]:
-        """``ChunkProvenance`` per chunk id — provenance columns + ``table_cells`` + ``chunk_annotations``.
-        The shared, dialect-agnostic provenance fetch behind both dialects' ``hydrate``."""
+    async def hydrate(self, conn: AsyncConnection, chunk_ids: list[str]) -> list[ChunkRecord]:
+        """§8 hydration — canonical text + licensing + provenance for ``chunk_ids``, in input order — in
+        ONE query over ``chunks`` (joined to ``documents``), the provenance columns riding along, plus one
+        batched query per child table (cells, annotations, methods). The single implementation behind
+        both dialects' ``RetrievalStore.hydrate`` (it touches only normal tables)."""
         if not chunk_ids:
-            return {}
-        c = self._chunks.c
+            return []
+        c, d = self._chunks.c, self._documents.c
         rows = (
             await conn.execute(
-                select(c.chunk_id, c.header_path, c.level, c.parent_chunk_id, c.geometry, c.content_hash)
+                select(
+                    c.chunk_id, c.text, c.document_id, d.source_kind, d.standard_id, c.locator,
+                    c.license_class, c.ai_grounding_allowed, c.available, *self._provenance_columns(),
+                )
+                .select_from(self._chunks.join(self._documents, c.document_id == d.document_id))
                 .where(c.chunk_id.in_(chunk_ids))
             )
         ).mappings().all()
+        provenance = await self._provenance(conn, rows)
+        methods = await self.methods_by_chunk(conn, chunk_ids)  # one query, not one per chunk
+        by_id = {r["chunk_id"]: r for r in rows}
+        return [
+            self.create_chunk_record(row, methods.get(cid, []), provenance.get(cid))
+            for cid in chunk_ids
+            if (row := by_id.get(cid)) is not None
+        ]
+
+    async def chunk_provenance(
+        self, conn: AsyncConnection, chunk_ids: list[str]
+    ) -> dict[str, ChunkProvenance]:
+        """``ChunkProvenance`` per chunk id — provenance columns + ``table_cells`` + ``chunk_annotations``
+        (for callers that need provenance alone; ``hydrate`` fetches it with the record, in one query)."""
+        if not chunk_ids:
+            return {}
+        rows = (
+            await conn.execute(
+                select(*self._provenance_columns()).where(self._chunks.c.chunk_id.in_(chunk_ids))
+            )
+        ).mappings().all()
+        return await self._provenance(conn, rows)
+
+    def _provenance_columns(self) -> tuple[Any, ...]:
+        c = self._chunks.c
+        return (c.chunk_id, c.header_path, c.level, c.parent_chunk_id, c.geometry, c.content_hash)
+
+    async def _provenance(self, conn: AsyncConnection, rows: Any) -> dict[str, ChunkProvenance]:
+        """Build each row's ``ChunkProvenance`` from its provenance columns + its table cells and
+        annotations (one batched query per child table)."""
+        chunk_ids = [r["chunk_id"] for r in rows]
         cells = await self.child_rows_by_chunk(
             conn, self._table_cells, chunk_ids, self._table_cells.c.row, self._table_cells.c.col
         )
@@ -122,13 +163,12 @@ class ReadAssembler:
 
     @staticmethod
     def create_chunk_record(row, methods, provenance: ChunkProvenance | None) -> ChunkRecord:
-        """Assemble a ``ChunkRecord`` from a hydrate row + its method refs + provenance — the one place
-        the field list lives. Both dialects' ``hydrate`` queries select the same column order:
-        (chunk_id, text, document_id, source_kind, standard_id, locator, license_class,
-        ai_grounding_allowed, available), so the positional row is shared."""
+        """Assemble a ``ChunkRecord`` from a hydrate row (a mapping) + its method refs + provenance — the
+        one place the field list lives."""
         return ChunkRecord(
-            chunk_id=row[0], text=row[1], document_id=row[2], source_kind=row[3],
-            standard_id=row[4], locator=row[5], license_class=row[6],
-            ai_grounding_allowed=bool(row[7]), available=bool(row[8]),
-            methods=[(mid, ver) for mid, ver in methods], provenance=provenance,
+            chunk_id=row["chunk_id"], text=row["text"], document_id=row["document_id"],
+            source_kind=row["source_kind"], standard_id=row["standard_id"], locator=row["locator"],
+            license_class=row["license_class"], ai_grounding_allowed=bool(row["ai_grounding_allowed"]),
+            available=bool(row["available"]), methods=[(mid, ver) for mid, ver in methods],
+            provenance=provenance,
         )

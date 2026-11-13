@@ -32,13 +32,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import ClassVar
 
 try:  # importing `readline` gives input() up/down history + line editing (Linux/macOS stdlib)
     import readline  # noqa: F401
 except ImportError:  # pragma: no cover — e.g. Windows without pyreadline3; the REPL still works
     pass
 
-from rich.console import Console as RichConsole, Group
+from rich.console import Console as RichConsole
+from rich.console import Group
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
@@ -58,7 +60,7 @@ class Console:
     facade's high-level methods (``ingest`` / ``docs`` / ``delete`` / ``retrieve`` / ``explain`` /
     ``ask``). Owns its rich output sink (``self._out``) and the result/trace rendering."""
 
-    _COMMANDS = [
+    _COMMANDS: ClassVar[list[tuple[str, str]]] = [
         ("ingest <path> ...", "ingest (or re-ingest) files; a directory ingests the files in it"),
         ("docs", "list the ingested documents"),
         ("status", "summarize the corpus — counts + document-length stats"),
@@ -113,7 +115,7 @@ class Console:
                 continue
             try:
                 await handler(arg.strip())
-            except Exception as exc:  # keep the session alive on any command error
+            except Exception as exc:  # noqa: BLE001 - a REPL keeps the session alive on any command error
                 self._out.print(f"[red]error:[/] {escape(str(exc))}")
         self._out.print("[dim]bye[/]")
 
@@ -253,11 +255,9 @@ class Console:
         identity/provenance carried on each final result. Pure rendering — returns a renderable."""
         by_id = {r.chunk_id: r for stage in trace.stages for r in stage.results}
         parts: list = [Text.assemble(("query: ", "bold"), trace.query.text)]
-        if trace.routing is not None:
-            query_type, route = trace.routing
-            parts.append(
-                Text(f"routed: query_type={query_type or '∅'} → route {route!r}", style="magenta")
-            )
+        if trace.route_path:  # one hop per router passed through (nested routers each add theirs)
+            hops = " → ".join(f"query_type={qt or '∅'} → route {route!r}" for qt, route in trace.route_path)
+            parts.append(Text(f"routed: {hops}", style="magenta"))
         parts.append(Console._params_summary(trace.query))
         if trace.per_retriever:
             parts.append(Text("\nretrievers (before fusion)", style="bold"))
@@ -300,7 +300,7 @@ class Console:
         """A dim line: the over-fetch targets and the license/scope pre-filter the retrievers apply (which
         chunks a query may even see) — intermediate context the result tables don't show."""
         scope = "ALL" if query.scope == "ALL" else f"{len(query.scope)} method(s)"
-        grounding = " · grounding-required" if query.purpose.value == "GENERATION_GROUNDING" else ""
+        grounding = " · grounding-required" if query.permitted_filter().require_grounding else ""
         return Text(
             f"over-fetch: dense top-{query.dense_k}, sparse top-{query.sparse_k}  ·  "
             f"pre-filter: purpose={query.purpose.value}, scope={scope}{grounding}",
