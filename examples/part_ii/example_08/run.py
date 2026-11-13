@@ -32,11 +32,10 @@ import asyncio
 import copy
 from pathlib import Path
 
-from tarnrag import TarnRag
-from tarnrag.core.engine.config import GENERATION_PIPELINE
-
 from examples.common import corpus, load_config, require_model
 from examples.part_ii._runner import Runner
+from tarnrag import TarnRag
+from tarnrag.core.engine.config import GENERATION_PIPELINE
 
 CONFIG = Path(__file__).resolve().parent / "config.yaml"
 

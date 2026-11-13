@@ -18,13 +18,12 @@ from pathlib import Path
 
 import yaml
 
+from examples.common import corpus, load_config, require_model
+from examples.part_ii._runner import Runner
 from tarnrag import TarnRag
 from tarnrag.core.engine.config import RETRIEVAL_PIPELINE
 from tarnrag.eval import EvalSet, format_reports, format_segmented, sweep
 from tarnrag.retrieval import Query, StructuralQueryClassifier
-
-from examples.common import corpus, load_config, require_model
-from examples.part_ii._runner import Runner
 
 CONFIG = Path(__file__).resolve().parent / "config.yaml"
 EVALSET = Path(__file__).resolve().parent / "evalset.yaml"

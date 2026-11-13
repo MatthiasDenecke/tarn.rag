@@ -26,16 +26,16 @@ import asyncio
 import json
 from pathlib import Path
 
-from tarnrag import TarnRag
-from tarnrag.contracts import ChunkProvenance, RetrievalResult
-from tarnrag.contracts.structure import Span
 from bausatz import ComponentFactory
-from tarnrag.core.resources.llm import StaticLanguageModel
-from tarnrag.generation import GenerationContext, GenerationPipeline, GenerationResult
-from tarnrag.retrieval import Query
 
 from examples.common import corpus, load_config, require_model
 from examples.part_ii._runner import Runner
+from tarnrag import TarnRag
+from tarnrag.contracts import ChunkProvenance, RetrievalResult
+from tarnrag.contracts.structure import Span
+from tarnrag.core.resources.llm import StaticLanguageModel
+from tarnrag.generation import GenerationContext, GenerationPipeline, GenerationResult
+from tarnrag.retrieval import Query
 
 CONFIG = Path(__file__).resolve().parent / "config.yaml"
 

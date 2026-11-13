@@ -16,11 +16,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from tarnrag import TarnRag
-from tarnrag.ingestion.engine.types import DocumentSummary
-
 from examples.common import corpus, load_config, require_model
 from examples.part_ii._runner import Runner
+from tarnrag import TarnRag
+from tarnrag.ingestion.engine.types import DocumentSummary
 
 CONFIG = Path(__file__).resolve().parent / "config.yaml"
 

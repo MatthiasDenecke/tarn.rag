@@ -7,11 +7,10 @@ where — only that the runner runs end to end and that its HIT/MISS verdict mat
 
 from __future__ import annotations
 
-from tarnrag import TarnRag
-from tarnrag.core.engine.config import DatabaseSettings, EmbeddingSettings, Settings
-
 from examples.common import corpus, load_config
 from examples.part_ii._runner import Runner
+from tarnrag import TarnRag
+from tarnrag.core.engine.config import DatabaseSettings, EmbeddingSettings, Settings
 
 
 def test_example_00_base_config_is_explicit_and_complete():

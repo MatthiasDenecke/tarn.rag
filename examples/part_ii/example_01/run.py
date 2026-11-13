@@ -24,10 +24,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from tarnrag import TarnRag
-
 from examples.common import corpus, load_config, require_model
 from examples.part_ii._runner import Runner
+from tarnrag import TarnRag
 
 CONFIG = Path(__file__).resolve().parents[1] / "example_00" / "config.yaml"  # the base config (dense)
 
