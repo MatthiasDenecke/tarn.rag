@@ -37,5 +37,5 @@ python -m tarnrag.console examples/part_ii/example_07/config.yaml
 tarn> ask how do I service a centrifugal pump before starting it?
 ```
 
-→ Next: **multi-hop** — *"what oil does the TX-200 take?"* bridges two documents (`compressor-models`
-→ `lubrication-spec`), which one retrieve→read pass cannot gather.
+→ Next: **[Example 08](../example_08)** — multi-hop: *"which oil grade does the TX-200 require?"* bridges
+two documents (`compressor-models` → `lubrication-spec`), which one retrieve→read pass cannot reach.

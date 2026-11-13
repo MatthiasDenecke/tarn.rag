@@ -1,0 +1,121 @@
+# =============================================================================
+# Part II · Example 08 — multi-hop (decomposition)
+# =============================================================================
+# Example 07 verified its answers. But single_hop can only answer from what the
+# QUESTION retrieves in one pass — and some answers are reachable only through a
+# bridge. "Which oil grade does the TX-200 require?" needs two hops:
+#     compressor-models : the TX-200 is built on a Cooper-Bessemer GMV frame
+#     lubrication-spec  : GMV frames require ISO VG 68
+# Neither document holds the whole chain, and the second is NOT retrievable from
+# the question — four near-identical frame specs (Ariel/Waukesha/Superior/Clark)
+# crowd it out of the top-k. So single_hop returns "not specified".
+#
+# TWO deltas from example_07 (`diff example_07/config.yaml example_08/config.yaml`):
+#   1. its OWN store — this example ingests corpus-2 PLUS corpus-2-frames (the
+#      four distractor specs), so the base store the other rungs share is left
+#      exactly as it was.
+#   2. reasoner: single_hop → decomposition.
+#
+#     python -m tarnrag.console examples/part_ii/example_08/config.yaml
+#     tarn> ingest examples/docs/corpus-2
+#     tarn> ingest examples/docs/corpus-2-frames
+#     tarn> ask which oil grade does the TX-200 require?
+# ...or as a script:  python -m examples.part_ii.example_08.run
+#
+# `ask` needs the LLM key in OPENAI_LLM_KEY (loaded from the repo-root .env) and
+# `pip install '.[openai]'`. Every other value is explicit — no Python defaults.
+# =============================================================================
+
+MODE: embedded            # whole pipeline runs in-process (SQLite + in-memory queue; no Postgres)
+ID_POLICY: caller         # document id = the file's stem (readable, stable: "pump-cavitation", ...)
+EMBEDDING_DIMENSION: 384  # gte-small's output width — the index and the repository must agree on it
+
+# --- the embedding pipeline ---------------------------------------------------
+# The SAME embedder embeds passages (now, at ingest) and queries (later, at
+# retrieval); its identity is fingerprinted into the index, and retrieval
+# refuses to open a store built with a different embedder.
+embedding:
+  provider: onnx                  # local ONNX runtime — offline, no API key
+  model: thenlper/gte-small       # the model id, recorded in the index fingerprint
+  revision: ""                    # "" = use whatever is on disk (pin a revision to be strict)
+  model_dir: ./models/gte-small   # local model.onnx + tokenizer.json (run scripts/fetch_model.py once)
+  max_seq_length: 512             # tokens past this are truncated before encoding
+  pooling: mean                   # gte-small is an encoder → mean-pool the token vectors
+  normalize: l2                   # L2-normalize, so a dot product is cosine similarity
+  query_prefix: ""                # gte-small is symmetric → no asymmetric query/passage prefixes
+  passage_prefix: ""
+  batch_size: 32                  # passages per embed call
+  inject_header_path: false       # embed the chunk text as-is (do not prepend its section header path)
+
+# --- the store ----------------------------------------------------------------
+# One SQLite file holds documents, chunks, embeddings (sqlite-vec), and the FTS5
+# sparse index. Shared by every later example; the parent dir is created on open.
+database:
+  document_url: sqlite:///./examples/part_ii/store/multihop.db
+
+# --- the generation reader (the LLM behind `ask`) -----------------------------
+# Built lazily on the first `ask`, so a retrieve-only session never needs a key.
+# The key is NEVER in this file — only the NAME of the env var that holds it.
+llm:
+  provider: openai                 # OpenAI, or any OpenAI-compatible /chat/completions endpoint
+  model: gpt-4o                    # capable reader — gpt-4o-mini intermittently declines answerable Qs
+  api_key_env: OPENAI_LLM_KEY      # read the key from this env var (not the standard OPENAI_API_KEY)
+  api_base_url: ""                 # "" = OpenAI's endpoint; set to a vLLM / Together / Groq / … URL
+  temperature: 0.0                 # as deterministic as the API allows (OpenAI isn't fully deterministic)
+  max_tokens: 1024
+  api_timeout: 60.0
+
+components:
+  # --- ingestion: the DAG that turns each .md file into embedded chunks --------
+  ingestion_pipeline:
+    class_name: pipeline
+    stages:
+      # 1) load + structured-parse: route a file to an extractor by its extension
+      - class_name: LoadAndParse
+        routes:
+          md: { class_name: markdown }   # .md → the Markdown extractor (headings become header paths)
+        default_extractor: { class_name: plain_text }   # any other extension → plain text
+      # 2) clean + normalize whitespace
+      - class_name: CleanAndNormalize
+      # 3) chunk: flat, overlapping character windows — the `base` representation.
+      #    `recursive` makes NO section-parent tree (that's the structure-aware chunker, used only by
+      #    the auto-merge step), which keeps these first retrieval examples free of parent/leaf duplicates.
+      - class_name: Chunk
+        chunker:
+          class_name: recursive
+          chunk_size: 400          # ~one short section per chunk on this corpus (12 docs → ~19 chunks)
+          overlap: 80              # carry 80 chars between neighbours so a sentence isn't cut cold
+      # 4) embed each chunk with the `embedding` settings above (terminal stage)
+      - class_name: Embed
+
+  # --- retrieval: dense-only — feeds the reader; generation is the focus here ---
+  retrieval_pipeline:
+    class_name: retrieval_pipeline
+    retrievers:
+      - class_name: dense          # exact vector KNN over the embedded chunks
+    fuser: { class_name: identity } # a single retriever → nothing to fuse (pass the ranking through)
+
+  # --- license/scope pre-filter applied inside the retrievers (ModusQ §5.6) ----
+  # Explicit even though this corpus is all one license class, so the retrieval path is fully specified.
+  license_policy: { class_name: default_license }
+
+  # --- generation: single_hop + VERIFICATION (grounding check + abstain) -------
+  # Same reasoner/assembler as Example 06, plus two things: a `grounding_checker`
+  # re-reads each claim against its cited evidence and stamps it grounded/ungrounded
+  # (llm_grounding: a second LLM pass judges support — reliable on real answers),
+  # and the `abstain` policy refuses outright when fewer than `min_grounded` of the
+  # claims hold up, returning `refusal` instead of an unsupported answer.
+  generation_pipeline:
+    class_name: generation_pipeline
+    # ← THE DELTA: a multi-hop reasoner. single_hop does ONE retrieve→read, so it can only answer
+    # from what the question itself retrieves — and the bridge passage (GMV frames → ISO VG 68) is
+    # NOT retrievable from "which oil grade does the TX-200 require?" (four near-identical frame
+    # specs crowd it out). decomposition splits the question, retrieves per sub-question, and
+    # synthesizes — so the second hop finds it. `iterative` (a dependent retrieve↔read loop) also
+    # solves this one; decomposition is the cheaper of the two here.
+    reasoner: { class_name: decomposition, max_subquestions: 4, top_k: 8 }
+    assembler: { class_name: provenance }              # answer + a provenance-bearing proof tree
+    grounding_checker: { class_name: llm_grounding }   # ← verify each claim against its cited evidence
+    abstain: true                                      # ← refuse rather than return an unsupported answer
+    min_grounded: 1.0                                  # every claim must be grounded (1.0 = strict)
+    refusal: "I don't have enough grounded evidence to answer that confidently."

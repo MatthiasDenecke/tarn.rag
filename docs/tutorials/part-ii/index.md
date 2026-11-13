@@ -22,8 +22,9 @@ trade**, and the only way to know what you traded away is to look at the query i
 | [05](05-query-routing.md) | Query routing *(Act A capstone)* | Per-query-type method selection: 1.00 on both types | — |
 | [06](06-minimal-generation.md) | Generation *(Act B opener)* | Passages → an answer with a proof tree | It can't tell "I answered" from "I couldn't" |
 | [07](07-grounding-and-abstain.md) | Grounding check + abstain | Unsupported answers — refuse instead | — |
+| [08](08-multi-hop.md) | Multi-hop (`decomposition`) | Answers that bridge two documents — unreachable in one hop | — (but pays several LLM calls where one hop paid one) |
 
-Rungs **01–05** are Act A (retrieval); **06–07** open Act B (generation). Walk them in order — the
+Rungs **01–05** are Act A (retrieval); **06–08** are Act B (generation). Walk them in order — the
 failures only make sense in sequence.
 
 **A ladder is not a stack.** Each rung repairs its predecessor's failure, but that does not mean you

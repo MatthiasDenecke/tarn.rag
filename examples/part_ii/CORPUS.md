@@ -28,6 +28,28 @@ file in it. This design note lives here, one level up, on purpose.
 Out-of-corpus questions (e.g. "What is the capital of France?") have **no** supporting doc on purpose —
 that is the P2-06 hallucination case that P2-07 grounding+abstain repairs.
 
+## The `corpus-2-frames` add-on (P2-08 multi-hop)
+
+`examples/docs/corpus-2-frames/` holds **four near-identical frame-lubrication specs** — Ariel JGT →
+`ISO VG 100`, Waukesha VHP → `ISO VG 46`, Superior MH → `ISO VG 150`, Clark HRA → `ISO VG 32`. Only
+**P2-08** ingests them (alongside `corpus-2`, into its own `multihop.db`), so the shared `base` store
+and every rung that reads it are untouched.
+
+They exist because **the multi-hop failure does not reproduce without them** (measured, 2026-07-13):
+on plain `corpus-2`, `lubrication-spec` is the *only* lubricant document, so "which oil grade does the
+TX-200 require?" retrieves it directly — both bridge facts land in the context window together and
+`single_hop`, `decomposition` and `iterative` **all** answer `ISO VG 68`. Retrieval had already done
+the "hop".
+
+With the four distractors, the question's own vocabulary ("oil grade", "frame", "ISO VG") matches all
+five specs equally, so the *right* one — the GMV spec — is crowded out of the top-k. It is now findable
+only via the bridge entity (`TX-200` → *Cooper-Bessemer GMV frame*), which lives in another document.
+`single_hop` answers "not specified"; `decomposition` bridges and answers correctly.
+
+> The lesson generalizes: multi-hop only pays when the bridge document is genuinely **out of reach**.
+> A corpus small enough that everything relevant fits in the top-k needs no hops — and shouldn't pay
+> for them. The distractors manufacture, in miniature, the condition that makes real corpora hard.
+
 ## Three representations, one corpus
 
 All three ingest the **same** `corpus-2` Markdown files (always routed `.md` → the `markdown`

@@ -104,10 +104,12 @@ You now have a system that retrieves well *and* knows the limits of what it retr
   and a policy that refuses rather than guesses.
 
 **The next failure is already in the corpus.** `compressor-models.md` says the `TX-200` is a
-Cooper-Bessemer GMV frame; `lubrication-spec.md` says a GMV frame takes `ISO VG 68`. Ask *"what oil
-does the TX-200 take?"* and no single retrieve-and-read pass can answer it — the bridge spans two
-documents, and neither one contains the whole chain. That is multi-hop, and it needs a reasoner that
-can decompose a question and retrieve again. The corpus is already built for it.
+Cooper-Bessemer GMV frame; `lubrication-spec.md` says a GMV frame takes `ISO VG 68`. Ask *"which oil
+grade does the TX-200 require?"* and no single retrieve-and-read pass can answer it — the bridge spans
+two documents, and neither contains the whole chain.
+
+**[8 · Multi-hop reasoning →](08-multi-hop.md)** — a reasoner that decomposes the question and
+retrieves again, so the second hop reaches what the first could not.
 
 ---
 
