@@ -1,8 +1,10 @@
 # tarn.rag
 
 **tarnrag** — composable, DAG-based RAG **ingestion + retrieval + generation** engines: documents in, a
-queryable vector index out, optionally a grounded answer with a proof tree. Pure library — there is no HTTP
-layer here (a consuming REST API lives in the separate **tiqtasq.backend** repo).
+queryable vector index out, optionally a grounded answer with a proof tree. This is a console
+application runnable in python from the command line, no other libraries are needed. The 'Quickstart' section
+shows you how to get started and the configs in the example folder demonstrate how to configure more
+complex systems that can be run from the command line.
 
 - **Ingestion** — a config-driven pipeline (extract → enrich → clean → chunk → embed) writing one store
   (a §8 index: documents · chunks · vectors · FTS · metadata), embedded (SQLite + sqlite-vec/FTS5) or
