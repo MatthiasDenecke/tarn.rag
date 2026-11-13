@@ -6,8 +6,9 @@ add or drop a stage, reorder them — and re-run; no Python changes.
 
 How it works: a pipeline is just data — ``{"class_name": "pipeline", "stages": [...]}``. Dropping
 that spec into ``Settings.components[INGESTION_PIPELINE]`` makes the engine build *that* pipeline.
-Here ``pipeline.json`` uses small chunks (``chunk_size`` 80 vs the default 512), so the same short
-corpus is split into MORE chunks than example 01 produced (one per doc).
+Here ``pipeline.json`` swaps the default ``structure_aware`` chunker (soft budget 1200 chars — so these
+~200-char docs stayed whole) for ``recursive`` with ``chunk_size`` 80, so the same short corpus is split
+into MORE chunks than example 01 produced (one per doc).
 
 One thing the JSON deliberately does NOT set: the Embed stage's embedding identity. That stays in
 ``Settings`` (shared with retrieval), so the engine injects it at build time and a hand-edited

@@ -50,6 +50,13 @@ the embedded path stays light.
 - Pluggable behavior (extractors, retrievers, reasoners, …) is added as a **Component** with a
   registered tag, so it is selectable from config — see the
   [component catalog](./docs/reference/components.md).
+- **Docs and examples are separate trees.** [`docs/`](./docs/index.md) is prose, organized by
+  [Diátaxis](https://diataxis.fr/) (tutorials · how-to · reference · explanation) — don't add folders
+  named after artifact types. [`examples/`](./examples/README.md) is runnable code (an importable
+  package, hence `part_i` with an underscore). A walkthrough of an example is a **tutorial** under
+  `docs/tutorials/`; the example dir keeps only a short card README linking to it. Numbers published
+  in docs must come from *running* the example against current code — defaults move. Full rules in
+  [`CLAUDE.md`](./CLAUDE.md#documentation--examples-two-trees-two-jobs).
 
 ## Architectural ground rules
 

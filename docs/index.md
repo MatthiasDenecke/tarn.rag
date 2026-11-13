@@ -13,6 +13,11 @@ Step-by-step walkthroughs from zero to a working setup:
   ingest → retrieve → ask round trip with the Python API.
 - [A console session](tutorials/console-session.md) — the same round trip in the interactive
   `tarnrag` console, no code required.
+- [Part I — the fundamentals](tutorials/part-i/index.md) — a guided series over the runnable
+  examples: ingestion and retrieval, a pipeline as config, comparing retrieval methods, grounded
+  generation.
+- [Part II — the failure-driven ladder](tutorials/part-ii/index.md) — one config knob per rung, each
+  fixing the previous rung's failure.
 
 ## [How-to guides](how-to/index.md) — recipes for a task
 

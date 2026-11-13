@@ -46,8 +46,10 @@ async def main() -> dict[str, list[RetrievalResult]]:
         print(f"\nQuery: {query!r}")
         if not results:
             print("  (no results)")
-        # RetrievalResult.score: higher is better. Step A is dense-only, so the score is the
-        # negated vector distance (closer match -> nearer to 0); results arrive already ranked.
+        # RetrievalResult.score: higher is better; results arrive already ranked. The default
+        # pipeline is hybrid (dense + sparse, RRF-fused), so the score is the RRF sum
+        # `Σ 1/(60 + rank)`: ~0.033 = both retrievers ranked it 1st, ~0.016 = only one returned it.
+        # Per-retriever raw scores stay in hit.component_scores.
         for rank, hit in enumerate(results, start=1):
             snippet = hit.text[:88].replace("\n", " ")
             print(f"  {rank}. score={hit.score:+.3f}  document={hit.document_id!r}")

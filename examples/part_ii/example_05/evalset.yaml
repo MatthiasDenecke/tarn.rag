@@ -1,0 +1,17 @@
+# Labeled queries for Example 05's routing scoreboard.
+#
+# Each entry: the query `text`, the gold `relevant` phrases (a result is a hit iff its text contains one,
+# case-insensitive — so labels survive re-ingestion), and the `query_type` label:
+#   * semantic — a paraphrase with little/no keyword overlap (dense should win);
+#   * lexical  — exact terms or an identifier (sparse/BM25 should win).
+# Four of each, so the per-type split is balanced.
+
+- { text: "service a rotary fluid machine before powering it up",          relevant: ["mechanical seal"], query_type: semantic }
+- { text: "how do I keep a big metal container from rusting over time",     relevant: ["corrosion"],       query_type: semantic }
+- { text: "find surface cracks without damaging the part",                  relevant: ["non-destructive"], query_type: semantic }
+- { text: "stop a pump from making bubbles that collapse on the impeller",  relevant: ["cavitation"],      query_type: semantic }
+
+- { text: "XQ-9920-A",                  relevant: ["XQ-9920-A"],    query_type: lexical }
+- { text: "gate valve stem packing",    relevant: ["stem packing"], query_type: lexical }
+- { text: "ISO VG 68",                  relevant: ["ISO VG 68"],    query_type: lexical }
+- { text: "API 653 inspection interval", relevant: ["API 653"],     query_type: lexical }

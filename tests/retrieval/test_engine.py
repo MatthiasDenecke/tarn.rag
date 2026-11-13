@@ -24,9 +24,10 @@ from tarnrag.retrieval import (
     RetrievalEngine,
     RetrievalError,
     RetrievalPipeline,
+    SearchTrace,
 )
 from tarnrag.retrieval.components.fuser import IdentityFuser, RRFFuser
-from tarnrag.retrieval.types import Purpose, SearchTrace
+from tarnrag.retrieval.types import Purpose
 
 FINGERPRINT = "fp-123"
 
@@ -497,3 +498,73 @@ async def test_pipeline_reranks_with_cross_encoder(repo):
     assert [r.chunk_id for r in results] == [cids[1], cids[0]]
     assert results[0].score == 0.9
     assert set(results[0].component_scores) == {"dense", "cross_encoder"}  # first-pass score kept
+
+
+# ---------------- explain: the SearchTrace the pipeline records (A4) ----------------
+
+
+async def test_explain_traces_per_retriever_candidates_and_stages(repo):
+    """``explain`` records the inner workings: each retriever's candidates before fusion, a ``fused`` and
+    a ``final`` stage, and ``trace.results`` equals what ``search`` returns."""
+    cids = await _index(repo)  # cids[0] = "storage tank inspection", cids[1] = "quokka marsupial"
+    settings = Settings(
+        _env_file=None, EMBEDDING_DIMENSION=3,
+        components={RETRIEVAL_PIPELINE: {
+            "class_name": "retrieval_pipeline",
+            "retrievers": [{"class_name": "dense"}, {"class_name": "sparse"}],
+            "fuser": {"class_name": "rrf"},
+        }},
+    )
+    engine = await RetrievalEngine.open(repo, _FakeEmbedder(query_vec=(1.0, 0.0, 0.0)), settings)
+    trace = await engine.explain_text("tank inspection", top_k=2)
+
+    assert {rc.key for rc in trace.per_retriever} == {"dense", "sparse"}  # both retrievers traced
+    dense = next(rc for rc in trace.per_retriever if rc.key == "dense")
+    assert dense.candidates and dense.candidates[0].chunk_id == cids[0]  # raw, pre-fusion candidates
+    assert [s.name for s in trace.stages] == ["fused", "final"]  # no merger/reranker configured
+    assert [r.chunk_id for r in trace.results] == [
+        r.chunk_id for r in await engine.search_text("tank inspection", top_k=2)
+    ]  # the trace's final == plain search
+
+
+async def test_explain_records_the_rerank_stage_and_its_movement(repo):
+    """With a reranker the trace shows a ``reranked`` stage whose order differs from ``fused`` — the
+    movement a UI renders as the rerank diff."""
+    cids = await _index(repo)
+    pipe = RetrievalPipeline(RetrievalPipeline.Config(
+        retrievers=[{"class_name": "dense"}], fuser={"class_name": "identity"},
+        reranker={"class_name": "cross_encoder"},
+    ))
+    ce = _FakeCrossEncoder({"storage tank inspection": 0.1, "quokka marsupial": 0.9})
+    ctx = RetrievalContext(store=repo, embedder=_FakeEmbedder(query_vec=(1.0, 0.0, 0.0)), cross_encoder=ce)
+    trace = SearchTrace(query=Query(text="q", top_k=2))
+    await pipe.search(trace.query, ctx, trace)
+
+    assert [s.name for s in trace.stages] == ["fused", "reranked", "final"]
+    fused = trace.stages[0]
+    reranked = trace.stages[1]
+    assert [r.chunk_id for r in fused.results] == [cids[0], cids[1]]      # dense order
+    assert [r.chunk_id for r in reranked.results] == [cids[1], cids[0]]   # cross-encoder flipped it
+
+
+async def test_explain_records_the_routing_decision(repo):
+    """A router records ``(query_type, route_key)`` and the chosen route still records its own stages.
+    A caller-supplied ``query_type`` makes the dispatch deterministic (no classifier needed)."""
+    await _index(repo)
+    spec = {
+        "class_name": "routing_retrieval_pipeline",
+        "routes": {"lexical": {
+            "class_name": "retrieval_pipeline",
+            "retrievers": [{"class_name": "sparse"}], "fuser": {"class_name": "identity"},
+        }},
+        "default": {"class_name": "retrieval_pipeline", "retrievers": [{"class_name": "dense"}]},
+    }
+    settings = Settings(_env_file=None, EMBEDDING_DIMENSION=3, components={RETRIEVAL_PIPELINE: spec})
+    engine = await RetrievalEngine.open(repo, _FakeEmbedder(query_vec=(1.0, 0.0, 0.0)), settings)
+
+    lex = await engine.explain(Query(text="shell thickness", query_type="lexical", top_k=2))
+    assert lex.routing == ("lexical", "lexical")            # routed to the sparse route
+    assert [s.name for s in lex.stages] == ["fused", "final"]  # the route recorded its stages
+
+    sem = await engine.explain(Query(text="tank", query_type="semantic", top_k=2))
+    assert sem.routing == ("semantic", "default")           # unknown type -> default route

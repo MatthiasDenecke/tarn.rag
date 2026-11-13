@@ -51,6 +51,33 @@ def example_db(example_file: str) -> Path:
     return (Path(data_dir) / here.name if data_dir else here) / "rag_docs.db"
 
 
+def load_env() -> None:
+    """Load the repo-root ``.env`` into the process environment, if ``python-dotenv`` is installed — so a
+    secret like the LLM key (e.g. ``OPENAI_LLM_KEY``) is available without exporting it by hand. The
+    explicit YAML config still wins (pydantic-settings ranks init values above env vars), so this only
+    supplies what a config doesn't set — chiefly the API key. A no-op when there's no ``.env`` / dotenv."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(REPO_ROOT / ".env")  # override=False: a real shell env var beats the .env entry
+
+
+def load_config(yaml_path: str | Path) -> Settings:
+    """Load a Part II YAML config into ``Settings`` (the same file the console runs), redirecting the
+    SQLite store into ``EXAMPLES_DATA_DIR`` when it is set — so a *test* run uses an isolated store while
+    a human run writes to the path the config declares. The config is authoritative for everything else
+    (embedding, pipelines), so the redirected store stays embedding-compatible with the original.
+    Loads ``.env`` first so the LLM key is picked up (see :func:`load_env`)."""
+    load_env()
+    settings = Settings.from_file(yaml_path)
+    data_dir = os.environ.get("EXAMPLES_DATA_DIR")
+    if data_dir:
+        db_name = Path(settings.database.document_url.split("///")[-1]).name
+        settings.database.document_url = f"sqlite:///{Path(data_dir) / db_name}"
+    return settings
+
+
 def base_settings(db_path: Path, **overrides: object) -> Settings:
     """Default embedded/SQLite settings shared by every example.
 

@@ -1,0 +1,112 @@
+# =============================================================================
+# Part II · Example 05 — query routing (Act A capstone)
+# =============================================================================
+# Act A's capstone steps back and COMPARES the retrieval methods, then routes.
+# This is Example 00's base config with ONE change — the `retrieval_pipeline`
+# is now a `routing_retrieval_pipeline`: a classifier labels each query
+# (lexical vs semantic) and dispatches it to the per-type-best method (sparse
+# for lexical, dense for semantic). It reads the SAME base store.
+#
+#     python -m tarnrag.console examples/part_ii/example_05/config.yaml
+#     tarn> explain XQ-9920-A                 # routed → sparse
+#     tarn> explain how do I stop a pump from cavitating   # routed → dense
+# ...or as a script:  python -m examples.part_ii.example_05.run   (prints the scoreboard)
+#
+# Every value below is set EXPLICITLY — nothing relies on a Python default.
+# =============================================================================
+
+MODE: embedded            # whole pipeline runs in-process (SQLite + in-memory queue; no Postgres)
+ID_POLICY: caller         # document id = the file's stem (readable, stable: "pump-cavitation", ...)
+EMBEDDING_DIMENSION: 384  # gte-small's output width — the index and the repository must agree on it
+
+# --- the embedding pipeline ---------------------------------------------------
+# The SAME embedder embeds passages (now, at ingest) and queries (later, at
+# retrieval); its identity is fingerprinted into the index, and retrieval
+# refuses to open a store built with a different embedder.
+embedding:
+  provider: onnx                  # local ONNX runtime — offline, no API key
+  model: thenlper/gte-small       # the model id, recorded in the index fingerprint
+  revision: ""                    # "" = use whatever is on disk (pin a revision to be strict)
+  model_dir: ./models/gte-small   # local model.onnx + tokenizer.json (run scripts/fetch_model.py once)
+  max_seq_length: 512             # tokens past this are truncated before encoding
+  pooling: mean                   # gte-small is an encoder → mean-pool the token vectors
+  normalize: l2                   # L2-normalize, so a dot product is cosine similarity
+  query_prefix: ""                # gte-small is symmetric → no asymmetric query/passage prefixes
+  passage_prefix: ""
+  batch_size: 32                  # passages per embed call
+  inject_header_path: false       # embed the chunk text as-is (do not prepend its section header path)
+
+# --- the store ----------------------------------------------------------------
+# One SQLite file holds documents, chunks, embeddings (sqlite-vec), and the FTS5
+# sparse index. Shared by every later example; the parent dir is created on open.
+database:
+  document_url: sqlite:///./examples/part_ii/store/base.db
+
+# --- the generation reader (the LLM behind `ask`) -----------------------------
+# Built lazily on the first `ask`, so a retrieve-only session never needs a key.
+# The key is NEVER in this file — only the NAME of the env var that holds it.
+llm:
+  provider: openai                 # OpenAI, or any OpenAI-compatible /chat/completions endpoint
+  model: gpt-4o-mini               # the reader model (swap for any model your key can call)
+  api_key_env: OPENAI_LLM_KEY      # read the key from this env var (not the standard OPENAI_API_KEY)
+  api_base_url: ""                 # "" = OpenAI's endpoint; set to a vLLM / Together / Groq / … URL
+  temperature: 0.0                 # deterministic answers
+  max_tokens: 1024
+  api_timeout: 60.0
+
+components:
+  # --- ingestion: the DAG that turns each .md file into embedded chunks --------
+  ingestion_pipeline:
+    class_name: pipeline
+    stages:
+      # 1) load + structured-parse: route a file to an extractor by its extension
+      - class_name: LoadAndParse
+        routes:
+          md: { class_name: markdown }   # .md → the Markdown extractor (headings become header paths)
+        default_extractor: { class_name: plain_text }   # any other extension → plain text
+      # 2) clean + normalize whitespace
+      - class_name: CleanAndNormalize
+      # 3) chunk: flat, overlapping character windows — the `base` representation.
+      #    `recursive` makes NO section-parent tree (that's the structure-aware chunker, used only by
+      #    the auto-merge step), which keeps these first retrieval examples free of parent/leaf duplicates.
+      - class_name: Chunk
+        chunker:
+          class_name: recursive
+          chunk_size: 400          # ~one short section per chunk on this corpus (12 docs → ~19 chunks)
+          overlap: 80              # carry 80 chars between neighbours so a sentence isn't cut cold
+      # 4) embed each chunk with the `embedding` settings above (terminal stage)
+      - class_name: Embed
+
+  # --- retrieval: QUERY ROUTING (THE ONE CHANGE) ------------------------------
+  # A classifier labels each query, then it's dispatched to the per-type-best
+  # method: sparse (BM25) for lexical queries (exact terms / identifiers), dense
+  # for semantic ones (paraphrases). Unlabeled / unknown → the hybrid default.
+  # Routes are themselves pipelines, so routing composes.
+  retrieval_pipeline:
+    class_name: routing_retrieval_pipeline
+    classifier: { class_name: structural }   # label lexical/semantic with no training, no labels
+    routes:
+      lexical:                               # exact terms / identifiers → sparse wins
+        class_name: retrieval_pipeline
+        retrievers: [{ class_name: sparse }]
+        fuser: { class_name: identity }
+      semantic:                              # paraphrases → dense wins
+        class_name: retrieval_pipeline
+        retrievers: [{ class_name: dense }]
+    default:                                 # unknown type → hybrid (robust to both)
+      class_name: retrieval_pipeline
+      retrievers: [{ class_name: dense }, { class_name: sparse }]
+      fuser: { class_name: rrf }
+
+  # --- license/scope pre-filter applied inside the retrievers (ModusQ §5.6) ----
+  # Explicit even though this corpus is all one license class, so the retrieval path is fully specified.
+  license_policy: { class_name: default_license }
+
+  # --- generation: the simplest reader (Act B exercises + elaborates this) -----
+  # The complete baseline so `ask` is fully specified, not left to a default. Example 07 adds the
+  # grounding check + abstain; Example 08 swaps in a multi-hop (decomposition) reasoner.
+  generation_pipeline:
+    class_name: generation_pipeline
+    reasoner: { class_name: single_hop, top_k: 4 }   # one retrieve→read pass (cheapest)
+    assembler: { class_name: provenance }            # answer + a provenance-bearing proof tree
+    # no grounding_checker / abstain yet — added in Example 07

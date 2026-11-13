@@ -210,6 +210,36 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
 - **Interfaces:** prefer **ABCs** (`abc.ABC` + `@abstractmethod`) over `typing.Protocol`;
   implementations inherit explicitly.
 
+## Documentation & examples (two trees, two jobs)
+
+- **`docs/` is prose, organized by [Diátaxis](https://diataxis.fr/)** — `tutorials/` (learning) ·
+  `how-to/` (a task) · `reference/` (lookup) · `explanation/` (why). Diátaxis organizes by *user
+  need*, so **never add a folder named after an artifact type** (`docs/examples/`, `docs/guides/`) —
+  it belongs to no quadrant. `docs/index.md` is the entry point; every new page must be linked from
+  its section index.
+- **`examples/` is runnable code** — scripts, configs, corpora. It is an *importable package*
+  (`python -m examples.part_i.example_01.ingestion`; `tests/examples/` imports `examples.*`), which
+  is why its dirs use **underscores** (`part_i`, `example_04`) while doc dirs use **hyphens**
+  (`part-i` — not a valid Python identifier). **Don't move example code under `docs/`.** The docs
+  link *to* the examples; they are companion material, not a docs section.
+- **Prose goes in exactly one place.** A walkthrough of an example is a *tutorial* →
+  `docs/tutorials/part-i/` or `part-ii/`. Each example dir keeps only a short **card** README: its
+  config delta, the run commands, and a link to its tutorial page. Never explain the same idea in
+  both — they drift.
+- **Verify every number you publish.** Ranks, scores, chunk counts, and eval tables in docs must come
+  from *running the example against the current code*, never copied from an older README. Library
+  defaults move (the default retrieval pipeline changed dense-only → hybrid mid-2026, which silently
+  invalidated every documented score). Run it, then write it.
+- **Docs must not contradict measured findings.** `doc/phases.md` records the sweeps (e.g. S1: the
+  cross-encoder subsumes routing, so routing under a reranker is pure cost). Check a claim against it
+  before teaching the opposite.
+- **Part II configs are fully explicit YAML — no reliance on library defaults.** Every stage and
+  component parameter is enumerated, so a default change cannot move the results. One knob per rung;
+  the **diff between two configs is the lesson**. Ingest once (rungs are config swaps over one store);
+  only a *representation* change (chunker/enricher/extractor) gets its own store, and says so.
+- **Adding an example:** the code dir (with `__init__.py`), a smoke test in `tests/examples/`, a
+  tutorial page under `docs/tutorials/part-*/`, a link in that series' `index.md`, and a card README.
+
 ## Stack
 
 Python 3.12 · **Pydantic v2** / pydantic-settings (`model_config = ConfigDict(...)` /

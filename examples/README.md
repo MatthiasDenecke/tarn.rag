@@ -1,16 +1,20 @@
 # tarnrag examples
 
-Runnable, self-contained examples that teach the `tarnrag` architecture one piece at a time.
+Runnable, self-contained example programs. **The prose lives in the docs** — these directories hold the
+code, the configs, and the sample corpora.
 
-- **Part I** (`part_i/`) — minimal examples over **SQLite / embedded mode** (zero infra). Each
-  shows one aspect of the pipeline: ingestion + retrieval, chunking, id policy, enrichment, …
-- **Part II** (`part_ii/`) — production concerns: deployment, evaluation, fine-tuning *(coming)*.
+| | | |
+|---|---|---|
+| **Part I** (`part_i/`) | Four steps over a three-document corpus: ingestion + retrieval, a pipeline as config, comparing retrieval methods, grounded generation. Zero infra, all offline (bar the last generation step). | 📖 **[Tutorials: Part I](../docs/tutorials/part-i/index.md)** |
+| **Part II** (`part_ii/`) | The failure-driven ladder: each rung adds one config knob, shows a query that works and one that **fails**, and the next rung repairs it. YAML configs, console-first. | 📖 **[Tutorials: Part II](../docs/tutorials/part-ii/index.md)** |
+
+Each `part_ii/example_NN/` also carries a short README with its config delta and run commands.
 
 ## Setup (once, from the repo root)
 
 ```bash
 pip install -e ".[onnx]"       # the tarnrag package + the ONNX embedding runtime
-python scripts/fetch_model.py  # download the embedding model + tokenizer (needs network)
+python scripts/fetch_model.py  # the embedding model + tokenizer (needs network)
 ```
 
 ## Running an example
@@ -18,41 +22,43 @@ python scripts/fetch_model.py  # download the embedding model + tokenizer (needs
 Examples are a Python package; run them as modules **from the repo root**:
 
 ```bash
-python -m examples.part_i.example_01.ingestion   # ingest the sample corpus into a local SQLite store
-python -m examples.part_i.example_01.retrieval   # query that store
+# Part I
+python -m examples.part_i.example_01.ingestion    # ingest the sample corpus into a local SQLite store
+python -m examples.part_i.example_01.retrieval    # query that store
+python -m examples.part_i.example_02.ingestion    # same, pipeline configured from pipeline.json
+python -m examples.part_i.example_03.evaluation   # compare retrieval methods on a labeled set
+python -m examples.part_i.example_04.generation   # question -> grounded answer + proof tree
 
-python -m examples.part_i.example_02.ingestion   # same, but the pipeline is configured from pipeline.json
-python -m examples.part_i.example_02.retrieval   # query the JSON-configured store
-
-python -m examples.part_i.example_03.ingestion   # index the corpus with a small-chunk pipeline
-python -m examples.part_i.example_03.evaluation  # compare retrieval methods on a labeled set (eval harness)
-
-python -m examples.part_i.example_04.ingestion                  # index the corpus (offline)
-ANTHROPIC_API_KEY=sk-...  python -m examples.part_i.example_04.generation  # question -> grounded answer + proof tree
+# Part II — build the store once, then each rung is a config swap
+python -m examples.part_ii.example_00.run         # ingest corpus-2 into the base store
+python -m examples.part_ii.example_02.run         # hybrid retrieval (dense + sparse + RRF)
 ```
 
-Example 04 is the only one that needs an LLM (for generation); the rest run fully offline. Without a key
-it still ingests + retrieves and previews what it would send the model.
+Running with `-m` puts the repo root on the import path, so `examples` and `tarnrag` both resolve — no
+`PYTHONPATH` or `sys.path` tweaks. (Directory names use underscores because they are **module names**.)
 
-Running with `-m` puts the repo root on the import path, so `examples` and `tarnrag` both resolve —
-no `PYTHONPATH` or `sys.path` tweaks. (Directory names use underscores because they are module names.)
+Generation needs an LLM key; everything else runs offline. Part I's example 04 uses Anthropic
+(`ANTHROPIC_API_KEY`) and previews what it *would* send the model if no key is set; Part II's configs
+name **`OPENAI_LLM_KEY`** and need `pip install '.[openai]'`. A config names the *variable*, never the
+key itself — a repo-root `.env` is loaded automatically.
 
 ## Interactive console
 
-For an interactive session instead of scripts, start the REPL with one JSON config:
+Part II is console-first: each example *is* a config you can drive interactively.
 
 ```bash
-python -m tarnrag.console examples/console.config.json
+python -m tarnrag.console examples/part_ii/example_02/config.yaml   # a Part II rung
+python -m tarnrag.console examples/console.config.json              # a general-purpose config
 ```
 
-Then `ingest <path>` (or a directory; re-ingesting a file replaces it), `docs`, `delete <id>`,
-`retrieve <query>` (passages only), and `ask <query>` (retrieval + generation — answer + proof tree; needs
-`ANTHROPIC_API_KEY`). The config is a `Settings` document: the database, embedding, and llm settings plus
-the retrieval/generation pipeline specs under `components`.
+Commands: `ingest <path>` (file or directory; re-ingesting replaces), `docs`, `status`, `delete <id>`,
+`retrieve <query>`, `explain <query>` (the full scoring breakdown — per-retriever candidates, fusion,
+rerank, merge, with a movement column) and `ask <query>` (answer + proof tree). See the
+[console reference](../docs/reference/console-commands.md).
 
-The console is just a UI; the work lives in `tarnrag.TarnRag`, a facade over the three engines that you
-can drive directly in your own code. Each call returns an `Outcome` — its `value` plus a `report` of any
-non-fatal issues (empty when all went well), so nothing is printed or silently skipped:
+The console is only a UI; the work lives in `tarnrag.TarnRag`, the facade over the three engines, which
+you can drive directly. Every call returns an `Outcome` — a `value` plus a `report` of non-fatal issues,
+so nothing is silently skipped:
 
 ```python
 from tarnrag import TarnRag
@@ -69,48 +75,29 @@ async with TarnRag("examples/console.config.json") as tarn:
 
 ```
 examples/
-├── common.py            # shared helpers used by every example
-├── docs/                # sample corpora, ingested by path
-│   └── corpus-1/        # add more as docs/corpus-2/, docs/<name>/ …
-├── part_i/              # SQLite teaching examples
-│   ├── example_01/      # minimal ingestion + retrieval (the default pipeline)
-│   │   ├── ingestion.py
-│   │   └── retrieval.py
-│   ├── example_02/      # the ingestion pipeline configured from JSON
-│   │   ├── pipeline.json
-│   │   ├── ingestion.py
-│   │   └── retrieval.py
-│   ├── example_03/      # comparing retrieval methods with the eval harness
-│   │   ├── evalset.json
-│   │   ├── ingestion.py
-│   │   └── evaluation.py
-│   └── example_04/      # end-to-end generation (config-driven): question -> answer + proof tree
-│       ├── ingestion.json   retrieval.json   generation.json   questions.json
-│       ├── ingestion.py
-│       └── generation.py
-└── part_ii/             # production / eval / fine-tuning (coming)
+├── common.py             # shared helpers (settings factory, corpus paths, model check)
+├── console.config.json   # a general-purpose console config
+├── docs/                 # sample corpora, ingested by path
+│   ├── corpus-1/         # 3 short docs — Part I
+│   └── corpus-2/         # 12 engineered Markdown docs — Part II
+├── part_i/example_NN/    # scripts + JSON pipeline specs
+└── part_ii/
+    ├── PLAN.md · CORPUS.md   # the ladder's design notes; why each corpus doc exists
+    ├── _runner.py            # shared harness: run the good/bad cases, render the breakdown
+    └── example_NN/           # config.yaml + run.py + README (the card)
 ```
-
-## Conventions (`common.py`)
-
-The incidental setup every example repeats lives in `examples/common.py`, so each example file keeps
-only the part it is teaching:
-
-| Helper | What it gives you |
-|--------|-------------------|
-| `base_settings(db_path, **overrides)` | Default embedded/SQLite `Settings`; override just the knob you are demonstrating, e.g. `base_settings(db, chunking=ChunkingSettings(size=128))`. |
-| `example_db(__file__)` | A `rag_docs.db` next to the example — each example gets its **own** store, so they run independently and in any order. |
-| `corpus("corpus-1")` | Path to a named corpus under `docs/`. |
-| `require_model()` | Friendly error if the embedding model has not been fetched. |
-
-An example's ingestion and retrieval **must** build from the same `db_path` + `embedding` config —
-retrieval validates an embedding *fingerprint* before opening the index. Reusing
-`base_settings(example_db(__file__))` on both sides guarantees it.
 
 ## Adding things
 
-- **A corpus:** drop files in `examples/docs/<name>/` and select it with `corpus("<name>")`.
-- **An example:** create `examples/part_i/example_NN/` with an `__init__.py` and your script(s), and
-  import what you need from `examples.common`.
+- **A corpus:** drop files in `examples/docs/<name>/` and select it with `corpus("<name>")`. Put design
+  notes *outside* the corpus directory — ingesting a directory ingests every file in it.
+- **A Part I example:** create `examples/part_i/example_NN/` with an `__init__.py` and your script(s),
+  importing what you need from `examples.common` (`base_settings`, `example_db`, `corpus`,
+  `require_model`). Override only the knob you are demonstrating.
+- **A Part II rung:** copy the nearest `config.yaml`, change **one** thing, and keep the config fully
+  explicit — no reliance on library defaults, so results can't drift when a default changes.
+
+An example's ingestion and retrieval **must** build from the same store *and* embedding config —
+retrieval validates an embedding fingerprint before opening the index.
 
 Generated stores (`*.db`) and `__pycache__/` are gitignored.
