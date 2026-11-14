@@ -127,8 +127,13 @@ class Reasoner(Component):
 
     @staticmethod
     def _parse_steps(raw_steps: Any, answer: str, n: int) -> list[ReasonedStep]:
-        """Parse a ``steps`` array into ``ReasonedStep``s with validated cited indices; fall back to one
-        cite-all step over ``answer`` when none are usable."""
+        """Parse a ``steps`` array into ``ReasonedStep``s with validated cited indices. An explicit empty
+        array is the model saying it cites nothing — e.g. "the passages don't say" — so the answer
+        becomes one step citing **nothing** (verification then grades it honestly) rather than one
+        fabricated to cite every passage. A missing or malformed ``steps`` (a format slip) still falls
+        back to one cite-all step over ``answer``, so a well-formed answer always carries its evidence."""
+        if isinstance(raw_steps, list) and not raw_steps:
+            return [ReasonedStep(claim=answer, cited=[])]
         steps: list[ReasonedStep] = []
         for s in raw_steps or []:
             if not isinstance(s, dict):

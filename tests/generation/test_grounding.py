@@ -86,20 +86,38 @@ async def test_llm_parses_decisive_verdicts(make_result):
     assert out == [Verdict.GROUNDED, Verdict.UNGROUNDED]
 
 
-async def test_llm_falls_back_to_grounded_on_bad_json(make_result):
+async def test_llm_is_uncertain_on_bad_json(make_result):
     ev = [make_result("a", "x")]
     reasoned = _reasoned([ReasonedStep(claim="c", cited=[0])], ev)
     out = await LLMGroundingChecker(LLMGroundingChecker.Config()).check(reasoned, _llm("not json at all"))
-    assert out == [Verdict.GROUNDED]  # unparseable -> never spuriously refuse
+    assert out == [Verdict.UNCERTAIN]  # undecided, not a pass — the pipeline policy collapses it
 
 
-async def test_llm_pads_missing_verdicts_as_grounded(make_result):
+async def test_llm_pads_missing_verdicts_as_uncertain(make_result):
     ev = [make_result("a", "x"), make_result("b", "y")]
     reasoned = _reasoned([ReasonedStep(claim="c1", cited=[0]), ReasonedStep(claim="c2", cited=[1])], ev)
     out = await LLMGroundingChecker(LLMGroundingChecker.Config()).check(
         reasoned, _llm(json.dumps({"verdicts": [False]}))  # only one verdict for two steps
     )
-    assert out == [Verdict.UNGROUNDED, Verdict.GROUNDED]
+    assert out == [Verdict.UNGROUNDED, Verdict.UNCERTAIN]
+
+
+def test_llm_reads_quoted_and_wrapped_booleans_strictly():
+    """MED-06: ``bool("false")`` is True — a quoted ``"false"`` must not grade a rejected claim GROUNDED."""
+    reply = json.dumps({"verdicts": ["false", "True", {"step": 0, "grounded": "false"}, 1, "maybe", None]})
+    assert LLMGroundingChecker._parse(reply, 6) == [
+        Verdict.UNGROUNDED, Verdict.GROUNDED, Verdict.UNGROUNDED, Verdict.GROUNDED,
+        Verdict.UNCERTAIN, Verdict.UNCERTAIN,
+    ]
+
+
+async def test_llm_grades_an_uncited_step_ungrounded_without_trusting_the_reply(make_result):
+    ev = [make_result("a", "x")]
+    reasoned = _reasoned([ReasonedStep(claim="c1", cited=[0]), ReasonedStep(claim="c2", cited=[])], ev)
+    out = await LLMGroundingChecker(LLMGroundingChecker.Config()).check(
+        reasoned, _llm(json.dumps({"verdicts": [True, True]}))
+    )
+    assert out == [Verdict.GROUNDED, Verdict.UNGROUNDED]
 
 
 # ---------------- cascade ----------------

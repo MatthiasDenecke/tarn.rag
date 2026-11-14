@@ -198,3 +198,33 @@ async def test_edge_branches_abstain_never_guess():
     ctx = GenerationContext(_FakeRetrieval([_hit_with(zero)]), llm=None)
     out = await lookup.reason(Query(text="percentage change in deferred revenue between 2018 and 2019"), ctx)
     assert out.abstained is True
+
+
+def _plan_table() -> Table:
+    """Columns 2023 / 2022; rows "Plan A", "Plan B", "Revenue"."""
+    cells = [
+        TableCell(id="h0", row=0, col=0, is_column_header=True, text=""),
+        TableCell(id="h1", row=0, col=1, is_column_header=True, text="2023"),
+        TableCell(id="h2", row=0, col=2, is_column_header=True, text="2022"),
+    ]
+    for r, (label, a, b) in enumerate([("Plan A", "10", "8"), ("Plan B", "7", "5"), ("Revenue", "30", "20")], 1):
+        cells += [
+            TableCell(id=f"r{r}", row=r, col=0, is_row_header=True, text=label),
+            TableCell(id=f"r{r}a", row=r, col=1, text=a),
+            TableCell(id=f"r{r}b", row=r, col=2, text=b),
+        ]
+    return Table(n_rows=4, n_cols=3, cells=cells)
+
+
+def test_an_article_does_not_resolve_a_single_letter_row():
+    """MED-07: "a" in the question must not cover half of "Plan A" — an unknown row is unresolved (refused /
+    delegated), never guessed."""
+    reasoner = TableLookupReasoner(TableLookupReasoner.Config(fallback=None))
+    assert reasoner._best_row(_plan_table(), "What is a change in operating costs from 2022 to 2023?") == (None, "")
+    assert reasoner._best_row(_plan_table(), "What is a change in revenue from 2022 to 2023?") == (3, "Revenue")
+
+
+def test_a_named_letter_still_picks_between_sibling_rows():
+    reasoner = TableLookupReasoner(TableLookupReasoner.Config(fallback=None))
+    assert reasoner._best_row(_plan_table(), "What was the change in Plan B from 2022 to 2023?") == (2, "Plan B")
+    assert reasoner._best_row(_plan_table(), "What was the change in Plan A from 2022 to 2023?") == (1, "Plan A")
