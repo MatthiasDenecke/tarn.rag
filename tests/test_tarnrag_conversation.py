@@ -112,11 +112,9 @@ async def test_memory_off_by_default_every_call_is_stateless(tmp_path):
         await _ingest(tarn, tmp_path)
         assert tarn.session_id is None
         await tarn.ask(FIRST)
-        outcome = await tarn.ask(FOLLOW_UP)
-        await tarn.retrieve(FOLLOW_UP)
-        await tarn.explain(FOLLOW_UP)
+        outcomes = [await tarn.ask(FOLLOW_UP), await tarn.retrieve(FOLLOW_UP), await tarn.explain(FOLLOW_UP)]
 
-        assert outcome.report.ok
+        assert all(o.report.ok and o.understood_as is None for o in outcomes)  # nothing was rewritten
         assert llm.rewrites == []  # no rewrite call, ever
         assert llm.questions_read() == [FIRST, FOLLOW_UP]  # the follow-up reaches the reader as typed
         assert await _stored_turns(tarn) == 0  # nothing remembered
@@ -171,11 +169,12 @@ async def test_memory_on_the_follow_up_reaches_the_reader_rewritten(tmp_path):
     llm = ScriptedLLM(answer="Cooper-Bessemer GMV")
     async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
         await _ingest(tarn, tmp_path)
-        await tarn.ask(FIRST)
+        assert (await tarn.ask(FIRST)).understood_as is None  # ran as typed
         assert llm.rewrites == []  # the first turn has nothing to resolve against → no extra call
 
         outcome = await tarn.ask(FOLLOW_UP)
         assert outcome.report.ok
+        assert outcome.understood_as == STANDALONE  # the call itself says what it ran
         assert len(llm.rewrites) == 1  # exactly one extra call for the follow-up
         assert "Cooper-Bessemer GMV" in llm.rewrites[0].user  # turn 1's answer reached the rewriter
         assert llm.rewrites[0].user.rstrip().endswith(f"Latest question: {FOLLOW_UP}")
@@ -214,6 +213,7 @@ async def test_memory_on_retrieval_searches_the_standalone_question(tmp_path, mo
         assert annotation.type == "contextualized" and annotation.deterministic is False
         assert annotation.value == {"original": FOLLOW_UP, "turns_used": 1}
         assert len(outcome.value) == 2 and outcome.report.ok
+        assert outcome.understood_as == STANDALONE  # also on retrieve's own result
 
 
 async def test_history_shows_each_turn_as_typed_and_as_understood(tmp_path):
@@ -284,12 +284,26 @@ async def test_retrieve_records_a_question_only_turn_that_a_later_ask_can_refer_
         assert "no answer was recorded" in llm.rewrites[0].user
 
 
+async def test_a_follow_up_the_rewriter_leaves_unchanged_reports_no_rewrite(tmp_path):
+    """``understood_as`` means "ran in different words": a self-contained question that the rewriter
+    returns as is comes back with ``None``, and its query carries no ``contextualized`` annotation."""
+    standalone = "What grade of oil does a Cooper-Bessemer GMV frame need?"
+    llm = ScriptedLLM(rewrite=json.dumps({"standalone_question": standalone}))
+    async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
+        await _ingest(tarn, tmp_path)
+        await tarn.ask(FIRST)
+        outcome = await tarn.explain(standalone)
+        assert len(llm.rewrites) == 1 and outcome.understood_as is None
+        assert outcome.value.query.annotations == []
+
+
 async def test_explain_is_a_dry_run_it_reads_memory_but_records_nothing(tmp_path):
     async with TarnRag(_settings(tmp_path, memory={}), llm=ScriptedLLM()) as tarn:
         await _ingest(tarn, tmp_path)
         await tarn.ask(FIRST)
-        trace = (await tarn.explain(FOLLOW_UP)).value
-        assert trace.query.text == STANDALONE  # it shows what retrieve WOULD search…
+        outcome = await tarn.explain(FOLLOW_UP)
+        trace = outcome.value
+        assert outcome.understood_as == trace.query.text == STANDALONE  # it shows what retrieve WOULD search…
         assert trace.query.annotations[0].value["original"] == FOLLOW_UP  # …and what was typed
         assert trace.results  # the trace is a real retrieval over the rewritten query
         assert [t.question for t in (await tarn.history()).value] == [FIRST]  # …without changing state
@@ -400,6 +414,7 @@ async def test_an_unusable_rewrite_falls_back_and_is_reported(tmp_path):
         await tarn.ask(FIRST)
         outcome = await tarn.ask(FOLLOW_UP)
         assert llm.questions_read() == [FIRST, FOLLOW_UP]  # carried on with the question as typed…
+        assert outcome.understood_as is None  # a fallback is not a rewrite
         (issue,) = outcome.report.issues  # …and said so
         assert issue.severity is Severity.WARNING and issue.subject == FOLLOW_UP
         assert "used as typed" in issue.message
@@ -517,13 +532,15 @@ async def test_a_failed_memory_write_returns_the_result_with_a_warning(tmp_path,
         async def locked(turn):
             raise RuntimeError("database is locked")
 
+        await tarn.ask(FIRST)  # recorded, so the follow-up below is rewritten
         monkeypatch.setattr(tarn._repository, "append_turn", locked)
-        outcome = await getattr(tarn, operation)(FIRST)
+        outcome = await getattr(tarn, operation)(FOLLOW_UP)
         assert outcome.value  # the answer / the passages
+        assert outcome.understood_as == STANDALONE  # the rewrite is still shown, though nothing recorded it
         (issue,) = outcome.report.issues
         assert issue.severity is Severity.WARNING and "could not record this turn" in issue.message
         assert "database is locked" in issue.message
-        assert (await tarn.history()).value == []
+        assert [t.question for t in (await tarn.history()).value] == [FIRST]
 
 
 async def test_only_a_rewrite_builds_the_llm(tmp_path, monkeypatch):

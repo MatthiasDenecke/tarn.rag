@@ -22,9 +22,10 @@ first ``ask``. Use it directly::
 ``doc/conversation-memory-design.md``). With it on, one ``TarnRag`` is one conversation: ``retrieve`` /
 ``explain`` / ``ask`` first make the question stand on its own against the last few turns (a follow-up
 like "which oil grade does *it* require?" is rewritten by one LLM call), then run exactly as before on
-that standalone question. ``ask`` and ``retrieve`` record a turn; ``explain`` is a dry run. The engines
-never learn a conversation exists — this facade, the composition root, applies the layer in front of
-them. ``history`` shows each question as typed and as understood; ``new_conversation`` / ``forget``
+that standalone question; a rewritten question comes back in the call's ``Outcome.understood_as``.
+``ask`` and ``retrieve`` record a turn; ``explain`` is a dry run. The engines never learn a
+conversation exists — this facade, the composition root, applies the layer in front of them.
+``history`` shows each earlier question as typed and as understood; ``new_conversation`` / ``forget``
 start over. With it off (the default) every call is stateless, exactly as without the layer.
 """
 
@@ -201,12 +202,13 @@ class TarnRag:
     async def retrieve(self, query: str, *, top_k: int = 8) -> Outcome[list[RetrievalResult]]:
         """Retrieval only — the ranked, provenance-bearing passages. ``top_k`` mirrors the engine's
         ``search_text`` default. With conversation memory on, a follow-up is first made standalone
-        against the conversation, and the question is recorded as a turn (no answer)."""
+        against the conversation (``Outcome.understood_as`` then holds the question that ran), and the
+        question is recorded as a turn (no answer)."""
         async with self._conversation_turn() as session:
             question, issues = await self._contextualize(query, session)
             results = await self._retrieval.search(self._query(question, top_k=top_k))
             issues += await self._remember(session, question, kind="retrieve")
-        return Outcome(results, Report(tuple(issues)))
+        return self._outcome(results, question, issues)
 
     async def explain(self, query: str, *, top_k: int = 8) -> Outcome[SearchTrace]:
         """Retrieval with its inner workings exposed — the same ranked results ``retrieve`` returns
@@ -215,21 +217,23 @@ class TarnRag:
         (fused → merged → reranked → final) with per-component scores, and any routing decision.
         Output-free like the rest of the facade — it returns the data; a UI (the console's ``explain``)
         renders it. With conversation memory on it is a **dry run**: the follow-up is made standalone by
-        the same rewrite ``retrieve`` runs (``trace.query`` is the executed query and carries the original
-        wording in its ``contextualized`` annotation), but nothing is recorded — a diagnostic never
+        the same rewrite ``retrieve`` runs (``Outcome.understood_as`` holds it; ``trace.query`` is the
+        executed query and carries the original wording in its ``contextualized`` annotation), but
+        nothing is recorded — a diagnostic never
         changes the conversation. The rewrite is its own LLM call, pinned to temperature 0 by default, so
         it normally matches what the next ``retrieve`` / ``ask`` runs; a hosted model doesn't strictly
         guarantee identical output."""
         async with self._conversation_turn() as session:
             question, issues = await self._contextualize(query, session)
             trace = await self._retrieval.explain(self._query(question, top_k=top_k))
-        return Outcome(trace, Report(tuple(issues)))
+        return self._outcome(trace, question, issues)
 
     async def ask(self, query: str) -> Outcome[GenerationResult]:
         """Retrieval + generation — a grounded answer with a proof tree. Needs an LLM. With conversation
         memory on, a follow-up is first made standalone against the conversation (the reasoners, the
         grounding check and the proof tree then work on that question — the conversation itself never
-        reaches the reader), and the turn is recorded with its answer and verdicts. An answer no
+        reaches the reader; ``Outcome.understood_as`` holds it), and the turn is recorded with its
+        answer and verdicts. An answer no
         grounding check verified is recorded with ``grounded=None`` — unchecked, not grounded."""
         generation = self._gen()  # first: no LLM ⇒ fail fast, before any read or retrieval
         async with self._conversation_turn() as session:
@@ -240,7 +244,7 @@ class TarnRag:
                 session, question, kind="ask", answer=result.answer,
                 grounded=result.grounded if checked else None, abstained=result.abstained,
             )
-        return Outcome(result, Report(tuple(issues)))
+        return self._outcome(result, question, issues)
 
     # ---------------- conversation memory (opt-in; see the module docstring) ----------------
 
@@ -253,7 +257,8 @@ class TarnRag:
         """The current conversation, oldest first — each turn's question as typed
         (``question``), as understood (``standalone_question``), and for an ``ask`` its answer and
         verdicts. The whole stored transcript, not only the short-term window the rewriter reads;
-        ``last`` keeps the most recent turns. This is how a UI shows what a follow-up was understood as."""
+        ``last`` keeps the most recent turns. This is how a UI shows what earlier follow-ups were
+        understood as; the current call's rewrite is on its own ``Outcome.understood_as``."""
         if last is not None and last < 0:
             raise ValueError(f"last must be >= 0 (or None for the whole conversation), got {last}")
         if self._session_id is None:
@@ -305,6 +310,14 @@ class TarnRag:
             "the question was used as typed"
         )
         return result, [Issue(message, Severity.WARNING, subject=question)]
+
+    @staticmethod
+    def _outcome[T](value: T, question: Contextualization, issues: list[Issue]) -> Outcome[T]:
+        """A query call's ``Outcome``: its value and report, plus — only when conversation memory
+        rewrote the question — the standalone question it ran, so a UI can show it without a second
+        call. ``None`` whenever the question ran as typed (memory off included)."""
+        understood_as = question.standalone if question.rewritten else None
+        return Outcome(value, Report(tuple(issues)), understood_as=understood_as)
 
     @staticmethod
     def _query(question: Contextualization, *, top_k: int = 8) -> Query:

@@ -92,15 +92,15 @@ class Narrator:
 
     async def play(self, turn: Turn) -> Played:
         """One turn, as a single ``ask`` (so a follow-up is rewritten once, and everything printed is
-        about that one run): what it searched — the standalone question the turn recorded, read back
-        through ``history`` (as typed when memory is off) — then the model-free check of where the
-        answer's passage ranked among the passages the reader was shown (the result's ``evidence``,
-        in retrieval order), then the answer."""
+        about that one run): what it searched — the call's ``understood_as`` when memory rewrote the
+        question, else the question as typed — then the model-free check of where the answer's passage
+        ranked among the passages the reader was shown (the result's ``evidence``, in retrieval order),
+        then the answer."""
         self._out.print(Rule(f"[bold cyan]you ›[/] {turn.question}", align="left", style="cyan"))
 
-        result = (await self._tarn.ask(turn.question)).value
-        recorded = (await self._tarn.history(last=1)).value  # empty when memory is off
-        searched = recorded[-1].standalone_question if recorded else turn.question
+        outcome = await self._tarn.ask(turn.question)
+        result = outcome.value
+        searched = outcome.understood_as or turn.question
         note = "as typed" if searched == turn.question else "rewritten against the conversation"
         self._out.print(f"[bold]searched[/]  {searched}  [dim]({note})[/]")
         documents = [passage.document_id for passage in result.evidence]

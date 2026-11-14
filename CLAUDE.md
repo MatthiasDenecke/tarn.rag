@@ -198,14 +198,19 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   `retrieval` nor `generation` and they never import it (`tests/conversation/test_dependency_rule.py`);
   the contextualizer works on plain text and **`TarnRag` builds the `Query`**, attaching a
   `contextualized` `Annotation` (`deterministic=False`). (2) History **never reaches the reader** — it
-  picks the question, it is not evidence, so grounding is not weakened. (3) The engines, `Query`, and
-  `GenerationResult` are untouched; a bare engine (and the eval harnesses) stays stateless. (4) Turns
+  picks the question, it is not evidence, so grounding is not weakened. (3) The engines never learn a
+  conversation exists: `Query` and `GenerationResult` are untouched (the generation engine only exposes
+  `verifies_grounding`, so an unchecked answer is recorded as `grounded=None`); a bare engine (and the
+  eval harnesses) stays stateless. (4) Turns
   persist through the `ConversationStore` port (`conversation_turns` table in `base.py` — shared Core,
   no dialect hook, **not** §8, additive so `SCHEMA_VERSION` is unchanged); kept until `forget()`, only
   the window is read. (5) `ask` + `retrieve` record a turn, `explain` is a dry run; a failed operation
   records nothing. (6) One `TarnRag` = one conversation: fresh per `open()` unless `session_id` is in
-  the spec or passed to `TarnRag(...)`. (7) A rewrite that can't be made (no LLM / unusable reply) falls
-  back to the question as typed **and reports a WARNING**; a raising LLM call propagates.
+  the spec or passed to `TarnRag(...)`; calls on one memory-enabled facade take turns (a turn lock from
+  reading the window to recording the turn). (7) A rewrite that can't be made (no LLM / unusable reply)
+  falls back to the question as typed **and reports a WARNING**; a raising LLM call propagates; a failed
+  turn write returns the result plus a WARNING. (8) A rewrite is surfaced on the call's own result,
+  `Outcome.understood_as` (set by `retrieve` / `explain` / `ask`, `None` otherwise), not in the `Report`.
 - **Retrieval is config-driven Components.** `RetrievalEngine.search` delegates to a `Searcher` built from
   `Settings.components[RETRIEVAL_PIPELINE]` — a `RetrievalPipeline` (parallel `Retriever`s {dense/sparse} →
   `Fuser` {identity/rrf, `(score desc, chunk_id asc)` tie-break} → hydrate → optional `Merger` {auto-merge}

@@ -52,10 +52,21 @@ nothing. In the console the same applies, plus `history`, `new` and `forget`
 
 A rewrite changes what is searched, so it is always recoverable:
 
-- `tarn.history()` returns each turn's `question` (as typed) and `standalone_question` (as run).
+- `retrieve`, `explain` and `ask` return it on their result: `outcome.understood_as` is the
+  standalone question the call ran, or `None` when the question ran as typed (always `None` with
+  memory off). No second call is needed:
+
+  ```python
+  outcome = await tarn.ask("Which oil grade does it require?")
+  if outcome.understood_as:
+      print("understood as:", outcome.understood_as)
+  ```
+
+- `tarn.history()` returns each earlier turn's `question` (as typed) and `standalone_question` (as run).
 - `tarn.explain(...)` returns a trace whose `query.text` is the query as run; its `contextualized`
   annotation holds the original wording.
-- The console prints `↳ understood as: …` after an `ask` or `retrieve` that was rewritten.
+- The console prints `↳ understood as: …` after an `ask` or `retrieve` that was rewritten (from
+  `understood_as`).
 
 ## Check the report
 

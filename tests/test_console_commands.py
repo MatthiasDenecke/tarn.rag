@@ -229,36 +229,33 @@ def _turn(question, standalone=None, *, kind="ask", ordinal=0, **fields):
 
 
 async def test_ask_shows_what_a_follow_up_was_understood_as():
-    """A rewrite is never hidden: after the answer comes back, the console reads the turn just recorded
-    and prints the standalone question that was actually asked."""
-    recorded = _turn("which oil does it need?", "Which oil does the GMV frame need?", ordinal=1)
+    """A rewrite is never hidden: the console prints the standalone question that was actually asked,
+    straight from the call's ``Outcome.understood_as``, before the answer and without a second call."""
     tarn = FakeTarn(
         session_id="s1",
-        ask=Outcome(GenerationResult(answer="ISO VG 68", proof=[], evidence=[])),
-        history=Outcome([recorded]),
+        ask=Outcome(
+            GenerationResult(answer="ISO VG 68", proof=[], evidence=[]),
+            understood_as="Which oil does the GMV frame need?",
+        ),
     )
     c = _console(tarn)
     await c._do_ask("which oil does it need?")
     text = _text(c)
     assert "understood as:" in text and "Which oil does the GMV frame need?" in text
     assert text.index("understood as:") < text.index("ISO VG 68")  # the interpretation precedes the answer
-    assert ("history", (1,)) in tarn.calls  # one cheap read of the latest turn
+    assert [name for name, _ in tarn.calls] == ["ask"]  # no history read
 
 
 async def test_retrieve_shows_what_a_follow_up_was_understood_as():
-    recorded = _turn("and its seals?", "pump seal replacement", kind="retrieve")
-    tarn = FakeTarn(session_id="s1", retrieve=Outcome([_result()]), history=Outcome([recorded]))
+    tarn = FakeTarn(session_id="s1", retrieve=Outcome([_result()], understood_as="pump seal replacement"))
     c = _console(tarn)
     await c._do_retrieve("and its seals?")
     assert "understood as:" in _text(c) and "pump seal replacement" in _text(c)
+    assert [name for name, _ in tarn.calls] == ["retrieve"]
 
 
 async def test_a_question_used_as_typed_prints_no_understood_line():
-    tarn = FakeTarn(
-        session_id="s1",
-        ask=Outcome(GenerationResult(answer="GMV", proof=[], evidence=[])),
-        history=Outcome([_turn("which frame is the TX-200 built on?")]),
-    )
+    tarn = FakeTarn(session_id="s1", ask=Outcome(GenerationResult(answer="GMV", proof=[], evidence=[])))
     c = _console(tarn)
     await c._do_ask("which frame is the TX-200 built on?")
     assert "understood as" not in _text(c)

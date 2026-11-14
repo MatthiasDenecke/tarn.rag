@@ -259,9 +259,19 @@ await tarn.forget()                  # Outcome[int] — delete this conversation
 ```
 
 `retrieve` / `explain` / `ask` behave as in §2. How a caller learns what a question became (§9 D12):
-`history()` returns each turn's `question` and `standalone_question`; `explain` shows it directly,
-because the returned `SearchTrace.query` is the executed query and carries the `contextualized`
-annotation. `ConversationTurn` is exported from `tarnrag`.
+each of the three returns it on its own result, in `Outcome.understood_as`, the standalone question
+the call actually ran. It is `None` when the question ran as typed, when memory is off, and for every
+other facade call. So a UI shows "understood as" from the call itself, with no second call, and it
+stays correct when two facades share one session and when recording the turn failed. The rewrite is
+part of the result, not the `Report`: it isn't an issue, and `report.ok` keeps meaning "nothing went
+wrong". For earlier turns, `history()` returns each turn's `question` and `standalone_question`.
+`explain`'s `SearchTrace.query` also carries the `contextualized` annotation with the original
+wording. `ConversationTurn` is exported from `tarnrag`.
+
+```python
+outcome = await tarn.ask("Which oil grade does it require?")
+outcome.understood_as   # "Which oil grade does the Cooper-Bessemer GMV frame require?" (None if not rewritten)
+```
 
 **The LLM.** The rewrite uses the same `LanguageModel` as generation (`Settings.llm`, or the injected
 one) — one model, built lazily on first need and closed by the facade if the facade built it. A
@@ -287,8 +297,9 @@ retrieval-only session with memory on therefore needs no key until its first fol
 | `forget` | Delete the current conversation's turns from the store. |
 
 The start-up banner states whether memory is on and, if so, the session id. After an `ask` or
-`retrieve` whose question was rewritten, the console prints one line, `↳ understood as: …`. `explain`
-shows the executed query plus an `asked: …` line with the original wording.
+`retrieve` whose question was rewritten, the console prints one line, `↳ understood as: …`, from the
+call's `Outcome.understood_as`. `explain` shows the executed query plus an `asked: …` line with the
+original wording.
 
 ## 7. Configuration
 
@@ -352,7 +363,7 @@ gets the same line, so the diffs between rungs — the lessons — are unchanged
 | D9 | Config shape | A component spec with an explicit `enabled` flag | An `enabled` flag on a component is new in this codebase |
 | D10 | Conversation on reopen | Fresh, unless a session id is configured or passed | One more knob |
 | D11 | Which operations record a turn | `ask` and `retrieve`; `explain` is a dry run | `explain` and `retrieve` differ in their effect on state |
-| D12 | How a rewrite is surfaced | Through `history()` (and natively in `explain`'s trace) | A UI makes a second call to show "understood as" |
+| D12 | How a rewrite is surfaced (revised 2026-11-14) | On the call's own result, `Outcome.understood_as`, set by `retrieve` / `explain` / `ask`; `history()` keeps the transcript, and `explain`'s trace carries the annotation | `Outcome`, which every facade call returns, has a field only the three query calls set. (Was: through `history()`. A UI then needed a second call, which could return another writer's turn when facades share a session, and found nothing when recording the turn had failed.) |
 | D13 | The examples' LLM | The shipped scripted model (`StaticLanguageModel`), offline | The rewrite and answers are scripted; the examples prove the plumbing and the retrieval difference, not live LLM behaviour |
 | D14 | Where the examples live | A new Part III series | New series scaffolding |
 

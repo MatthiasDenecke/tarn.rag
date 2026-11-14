@@ -75,8 +75,9 @@ layer records it as unchecked (`grounded=None`), not as grounded, and the rewrit
 `grounding_checker` configured, a turn shows ✓ or ✗.
 
 Each turn keeps both forms of the question: what you typed and what was actually run. A rewrite
-changes what is searched and answered, so it is never hidden — this table is `TarnRag.history()`, and
-the console prints `↳ understood as: …` after any `ask` or `retrieve` whose question was rewritten.
+changes what is searched and answered, so it is never hidden. This table is `TarnRag.history()`; the
+call itself returns the rewrite too, as `Outcome.understood_as`, and the console prints it as
+`↳ understood as: …` after any `ask` or `retrieve` whose question was rewritten.
 
 ## What memory does not do
 
@@ -105,8 +106,8 @@ memory off.
 `explain` rewrites the follow-up by the same rewrite `retrieve` runs and shows the result, but leaves
 the conversation as it found it — a way to check what a follow-up will become before asking it. The
 rewrite is its own LLM call (pinned to temperature 0, so normally the same text). This example's
-`run.py` therefore doesn't use it: it plays each turn as one `ask`, reads what was searched back from
-`history`, and checks the passages the reader was actually shown.
+`run.py` therefore doesn't use it: it plays each turn as one `ask`, takes what was searched from that
+call's `understood_as`, and checks the passages the reader was actually shown.
 
 ## Sessions
 

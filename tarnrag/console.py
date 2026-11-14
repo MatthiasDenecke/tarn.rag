@@ -58,7 +58,7 @@ from rich.tree import Tree
 from tarnrag.contracts import ConversationTurn, CorpusStatus, RetrievalResult
 from tarnrag.conversation.types import CONTEXTUALIZED
 from tarnrag.generation.types import GenerationResult
-from tarnrag.report import Report, Severity
+from tarnrag.report import Outcome, Report, Severity
 from tarnrag.retrieval.types import RetrieverCandidates, SearchTrace
 from tarnrag.tarnrag import TarnRag
 
@@ -200,7 +200,7 @@ class Console:
             self._out.print("usage: retrieve <query>", style="dim")
             return
         outcome = await self._tarn.retrieve(arg)
-        await self._show_understood(arg)
+        self._show_understood(outcome)
         if not outcome.value:
             self._out.print("[yellow]no results — ingest some documents first[/]")
         else:
@@ -223,7 +223,7 @@ class Console:
             self._out.print("usage: ask <query>", style="dim")
             return
         outcome = await self._tarn.ask(arg)
-        await self._show_understood(arg)
+        self._show_understood(outcome)
         self._out.print(self.create_answer_view(outcome.value))
         self._render_report(outcome.report)
 
@@ -258,15 +258,12 @@ class Console:
             return "[dim]conversation memory: off — every question stands alone[/]"
         return f"conversation memory: [green]on[/]  [dim]session {escape(session)}[/]"
 
-    async def _show_understood(self, typed: str) -> None:
-        """After an ``ask`` / ``retrieve``: if the question was rewritten against the conversation,
-        print what it was understood as — read back from the turn the call just recorded (the facade
-        surfaces a rewrite through ``history``). Silent when memory is off or nothing was rewritten."""
-        if self._tarn.session_id is None:
-            return
-        turns = (await self._tarn.history(last=1)).value
-        if turns and turns[-1].question == typed and turns[-1].rewritten:
-            self._out.print(f"[magenta]↳ understood as:[/] {escape(turns[-1].standalone_question)}")
+    def _show_understood(self, outcome: Outcome) -> None:
+        """After an ``ask`` / ``retrieve``: if conversation memory rewrote the question, print what it
+        was understood as — straight from the call's ``Outcome.understood_as``, no second call. Silent
+        when memory is off or the question ran as typed."""
+        if outcome.understood_as is not None:
+            self._out.print(f"[magenta]↳ understood as:[/] {escape(outcome.understood_as)}")
 
     # ---------------- rendering (static factory methods — reusable without a live session) ----------------
 
