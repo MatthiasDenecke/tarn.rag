@@ -8,7 +8,7 @@ omits (e.g. `ANTHROPIC_API_KEY`).
 
 | Command | Effect |
 |---|---|
-| `ingest <path> ...` | Ingest (or **re**-ingest) files; a directory ingests the files in it. The document id is the filename stem, so re-ingesting a file replaces it. |
+| `ingest <path> ...` | Ingest (or **re**-ingest) files; a directory ingests the files in it. Quote a path with spaces (`ingest "my docs/a.pdf"`). With `ID_POLICY: caller` (as in the sample config) the document id is the filename stem, so re-ingesting a file replaces it. |
 | `docs` | List ingested documents (id, chunks, embeddings). Section-parent chunks are stored for auto-merge but not embedded, so a sectioned document shows fewer embeddings than chunks. |
 | `status` | Summarize the corpus — counts + document-length stats. |
 | `delete <id>` | Delete a document and everything derived from it. |

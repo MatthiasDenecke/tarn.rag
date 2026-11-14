@@ -31,6 +31,8 @@ same views without a live session.
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import sys
 from typing import ClassVar
 
@@ -128,10 +130,15 @@ class Console:
         self._out.print(table)
 
     async def _do_ingest(self, arg: str) -> None:
-        if not arg:
-            self._out.print("usage: ingest <path> ...", style="dim")
+        try:
+            paths = self._split_paths(arg)
+        except ValueError as exc:  # e.g. an unbalanced quote
+            self._out.print(f"[red]can't read the paths:[/] {escape(str(exc))} — quote a path with spaces")
             return
-        outcome = await self._tarn.ingest(arg.split())
+        if not paths:
+            self._out.print("usage: ingest <path> ...   (quote a path with spaces: \"my docs/a.pdf\")", style="dim")
+            return
+        outcome = await self._tarn.ingest(paths)
         if outcome.value:
             table = Table(show_edge=False, header_style="bold")
             table.add_column("document", style="cyan")
@@ -147,6 +154,15 @@ class Console:
         else:
             self._out.print("[yellow]nothing ingested[/]")
         self._render_report(outcome.report)
+
+    @staticmethod
+    def _split_paths(arg: str) -> list[str]:
+        """Shell-style word splitting, so a quoted path keeps its spaces (``ingest "my docs/a.pdf" b.md``).
+        On Windows backslashes are path separators, not escapes, so the non-POSIX splitter is used (its
+        tokens keep their quotes, which are stripped here). Raises ``ValueError`` on an unbalanced quote."""
+        if os.name != "nt":
+            return shlex.split(arg)
+        return [token.strip('"').strip("'") for token in shlex.split(arg, posix=False)]
 
     async def _do_docs(self, _arg: str) -> None:
         outcome = await self._tarn.docs()

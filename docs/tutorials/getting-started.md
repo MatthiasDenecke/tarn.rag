@@ -32,11 +32,16 @@ setup:
 ```json
 {
   "MODE": "embedded",
+  "ID_POLICY": "caller",
   "EMBEDDING_DIMENSION": 384,
   "embedding": {"model_dir": "./models/gte-small"},
   "database": {"document_url": "sqlite:///./my_index.db"}
 }
 ```
+
+`"ID_POLICY": "caller"` makes each file's name (without the extension) its document id, so ingesting
+the same file again updates that document instead of adding a copy. Leave it out and every ingest
+gets a fresh random id — the right choice when you track documents by the ids `ingest` returns.
 
 Everything you don't specify falls back to a sensible default — including the ingestion pipeline
 (extract → enrich → clean → chunk → embed), hybrid retrieval (dense + BM25, RRF-fused), and the
@@ -76,8 +81,9 @@ itself stays out of config files). `ingest` and `retrieve` never need an LLM.
 ## 5. Where things landed
 
 Everything lives in the single SQLite file you configured (`my_index.db`): documents, chunks,
-dense vectors (sqlite-vec), the BM25 index (FTS5), and ingestion job status. Re-ingesting the same
-document replaces its chunks and embeddings — re-runs never duplicate.
+dense vectors (sqlite-vec), the BM25 index (FTS5), and ingestion job status. With
+`ID_POLICY: caller` (as configured above), re-ingesting a file replaces its document's chunks and
+embeddings in place — re-runs never duplicate.
 
 ## Next steps
 

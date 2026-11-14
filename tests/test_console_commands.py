@@ -84,6 +84,19 @@ async def test_ingest_renders_a_status_table():
     assert c._tarn.calls == [("ingest", (["a.md", "b.md"],))]  # split into paths
 
 
+async def test_ingest_keeps_a_quoted_path_with_spaces_together():
+    """LOW-01: shell-style splitting — ``"my docs/a.pdf"`` is one path, not two."""
+    c = _console(FakeTarn(ingest=Outcome([])))
+    await c._do_ingest('"my docs/report one.pdf" b.md')
+    assert c._tarn.calls == [("ingest", (["my docs/report one.pdf", "b.md"],))]
+
+
+async def test_ingest_reports_an_unbalanced_quote_instead_of_guessing():
+    c = _console(FakeTarn(ingest=Outcome([])))
+    await c._do_ingest('"my docs/a.pdf')
+    assert "can't read the paths" in _text(c) and c._tarn.calls == []
+
+
 async def test_ingest_without_arg_prints_usage_and_skips_the_call():
     c = _console(FakeTarn())
     await c._do_ingest("")
