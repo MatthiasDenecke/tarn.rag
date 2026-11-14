@@ -180,6 +180,11 @@ scripts/run_benchmarks.py · run_layout_eval.py   # QA-benchmark + TAT-QA layout
   job-status rows (the engine's `delete_document()` does both).
 - **Two databases.** `settings.database.queue_url` (pgQueuer) is separate from
   `settings.database.document_url` (document/chunk/embedding storage). Never conflate them.
+- **Resource ownership.** Whoever builds a resource closes it, and only that: an engine's `create()` that
+  builds its own store / embedder / LLM marks them owned and `aclose()` releases them; anything injected
+  (by `TarnRag`, an eval harness, a test) stays the injector's. `TarnRag` builds the store, embedder, and
+  one LLM and shares them with every engine (the Embed stage is bound to the same embedder, retrieval's
+  bridge components get the same LLM). Embedders expose `close()` (the API backends' HTTP client).
 - **Observability is optional.** Core logic must work with `observability=None` (guard every `self.obs`
   call); `Observability.create(settings.observability)` returns the configured adapter or `None` when
   disabled. Adapters: `structured_logging` (JSON-lines over stdlib logging — one machine-parseable line

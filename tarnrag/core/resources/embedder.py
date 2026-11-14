@@ -74,6 +74,22 @@ class Embedder(Resource):
     def embed_meta(self) -> dict[str, str]:
         """The ``index_meta`` embedding keys (incl. ``embedding_config_fingerprint``)."""
 
+    def close(self) -> None:
+        """Release any network client the embedder opened (the HTTP API backends). Idempotent; the local
+        backends hold nothing to release. Called by whoever built the embedder (an engine's ``create``,
+        the ``TarnRag`` facade, an eval harness)."""
+
+    @staticmethod
+    def _embed_time_identity(*, inject_header_path: bool, contextualize_tables: bool) -> dict[str, Any]:
+        """The embed-time text transforms that ride the fingerprint for backends that didn't always record
+        them (API / hash) — included only when ON, so an index built with the defaults keeps its
+        fingerprint (and keeps opening). The Embed stage applies them to the passage text, so they change
+        every vector: two indexes differing only here must not be mistaken for one."""
+        return {
+            **({"inject_header_path": True} if inject_header_path else {}),
+            **({"contextualize_tables": True} if contextualize_tables else {}),
+        }
+
     @staticmethod
     def _fingerprint(identity: dict[str, Any]) -> str:
         """Stable sha256 of an embedder's identity dict — the ``embedding_config_fingerprint`` recorded
@@ -120,6 +136,7 @@ class OnnxEmbedder(Embedder):
         self.tokenizer_path = self.model_dir / tokenizer_file
         self._session = None
         self._tokenizer = None
+        self._tokenizer_digest: str | None = None  # cached _tokenizer_sha256
         self._input_names: set[str] | None = None
         # Ingestion stages run in worker threads and queries embed off-loop too, so two first calls can
         # race the lazy load; the lock makes it build the (large) session exactly once.
@@ -155,7 +172,17 @@ class OnnxEmbedder(Embedder):
         return f"{self.model_id}@{self.revision}" if self.revision else self.model_id
 
     def _tokenizer_sha256(self) -> str:
-        return sha256_file(self.tokenizer_path)
+        """The tokenizer's content hash (part of the identity) — read once per instance (the identity is
+        consulted on every ``open``/stamp; the file doesn't change under a live embedder). A missing model
+        dir fails with the fix, not a bare ``FileNotFoundError`` path."""
+        if self._tokenizer_digest is None:
+            if not self.tokenizer_path.is_file():
+                raise FileNotFoundError(
+                    f"embedding tokenizer not found at {self.tokenizer_path} — fetch the model first "
+                    "(python scripts/fetch_model.py) or point EMBEDDING__MODEL_DIR at it"
+                )
+            self._tokenizer_digest = sha256_file(self.tokenizer_path)
+        return self._tokenizer_digest
 
     def _identity(self) -> dict[str, Any]:
         """
@@ -292,12 +319,20 @@ class HashEmbedder(Embedder):
 
     PROVIDER = "hash"
 
-    def __init__(self, *, embedding_dim: int = 384):
+    def __init__(
+        self, *, embedding_dim: int = 384, inject_header_path: bool = False, contextualize_tables: bool = False
+    ):
         self.embedding_dim = embedding_dim
+        self.inject_header_path = inject_header_path
+        self.contextualize_tables = contextualize_tables
 
     @classmethod
     def create(cls, embedding: EmbeddingSettings, embedding_dimension: int) -> HashEmbedder:
-        return cls(embedding_dim=embedding_dimension)
+        return cls(
+            embedding_dim=embedding_dimension,
+            inject_header_path=embedding.inject_header_path,
+            contextualize_tables=embedding.contextualize_tables,
+        )
 
     def dim(self) -> int:
         return self.embedding_dim
@@ -321,7 +356,12 @@ class HashEmbedder(Embedder):
         return (vec / norm).tolist()
 
     def _identity(self) -> dict[str, Any]:
-        return {"provider": self.PROVIDER, "embedding_dim": self.embedding_dim, "normalize": "l2"}
+        return {
+            "provider": self.PROVIDER, "embedding_dim": self.embedding_dim, "normalize": "l2",
+            **self._embed_time_identity(
+                inject_header_path=self.inject_header_path, contextualize_tables=self.contextualize_tables
+            ),
+        }
 
     def config_fingerprint(self) -> str:
         return self._fingerprint(self._identity())
@@ -332,5 +372,7 @@ class HashEmbedder(Embedder):
             "embedding_model_id": self.PROVIDER,
             "embedding_dim": str(self.embedding_dim),
             "normalize": "l2",
+            "inject_header_path": str(self.inject_header_path),
+            "contextualize_tables": str(self.contextualize_tables),
             "embedding_config_fingerprint": self.config_fingerprint(),
         }

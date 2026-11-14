@@ -134,6 +134,19 @@ async def build_tatqa_index(
     )
     await IngestionEngine.ensure_index_meta(repo, embedder)
     ingest = await IngestionEngine.create(settings, repository=repo, embedder=embedder)
+    try:
+        return await _fill_tatqa_index(ingest, corpus, repo, embedder)
+    finally:
+        await ingest.aclose()  # its own resources only — the repo + embedder go back to the caller
+
+
+async def _fill_tatqa_index(
+    ingest: IngestionEngine,
+    corpus: list[tuple[str, str, str]],
+    repo: DocumentRepository,
+    embedder: Embedder,
+) -> tuple[DocumentRepository, Embedder]:
+    """Reuse a complete cached store, else clear it and ingest the corpus (``build_tatqa_index``'s body)."""
     if len(await ingest.list_documents()) == len(corpus):  # already indexed — reuse
         return repo, embedder
     for summary in await ingest.list_documents():
@@ -173,7 +186,10 @@ async def tatqa_source_hit(
             results = await retrieval.search(Query(text=q.question, top_k=k))
         return any(r.document_id in set(q.gold_source_ids) for r in results)
 
-    hits = await asyncio.gather(*(_hit(q) for q in queries))
+    try:
+        hits = await asyncio.gather(*(_hit(q) for q in queries))
+    finally:
+        await retrieval.aclose()  # its own LLM client; the injected store/embedder stay the caller's
     by_segment: dict[str, tuple[int, float]] = {}
     for seg in sorted({q.answer_from for q in queries}):
         seg_hits = [h for h, q in zip(hits, queries) if q.answer_from == seg]
@@ -236,7 +252,10 @@ async def tatqa_attribution(
             result = await _safe_answer(generation.answer(Query(text=eq.text, purpose=eq.purpose)))
         return q.answer_from, _score(eq, result)
 
-    scored = await asyncio.gather(*(_one(q) for q in queries))
+    try:
+        scored = await asyncio.gather(*(_one(q) for q in queries))
+    finally:
+        await retrieval.aclose()  # its own LLM client; the injected store/embedder stay the caller's
     overall = _aggregate([s for _, s in scored])
     by_segment = {
         seg: _aggregate([s for sg, s in scored if sg == seg])
@@ -349,7 +368,10 @@ async def tatqa_numeric(
             return True, False
         return True, round(got, 2) == round(q.gold, 2)
 
-    scored = await asyncio.gather(*(_one(q) for q in queries))
+    try:
+        scored = await asyncio.gather(*(_one(q) for q in queries))
+    finally:
+        await retrieval.aclose()  # its own LLM client; the injected store/embedder stay the caller's
     return NumericReport(
         n=len(scored),
         attempted=sum(a for a, _ in scored),

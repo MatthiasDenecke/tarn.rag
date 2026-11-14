@@ -52,16 +52,22 @@ class RetrievalEngine(Engine):
         cross_encoder: CrossEncoder | None = None,
         license_policy: LicensePolicy | None = None,
         llm: LanguageModel | None = None,
+        *,
+        owns_llm: bool = False,
     ):
         """Pure data-holder: inject the resources (the read store + query embedder + an optional reranker +
         an optional license policy + an optional ``llm`` for the bridge components) and the pre-built
-        ``Searcher``. Build from ``Settings`` via :meth:`open` / :meth:`create`."""
+        ``Searcher``. Build from ``Settings`` via :meth:`open` / :meth:`create`. Injected resources stay
+        their owner's: ``aclose`` releases only what this engine built (``owns_llm`` / the store and
+        embedder ``create`` built)."""
         self.repository = repository
         self.embedder = embedder
         self._pipeline = searcher
         self._cross_encoder = cross_encoder
         self._license_policy = license_policy
         self._llm = llm
+        self._owns_llm = owns_llm
+        self._owns_embedder = False  # set by create() when it built the embedder
 
     @staticmethod
     def build_searcher(settings: Settings | None = None) -> Searcher:
@@ -84,11 +90,18 @@ class RetrievalEngine(Engine):
 
     @classmethod
     async def open(
-        cls, repository: DocumentRepository, embedder: Embedder, settings: Settings | None = None
+        cls,
+        repository: DocumentRepository,
+        embedder: Embedder,
+        settings: Settings | None = None,
+        *,
+        llm: LanguageModel | None = None,
     ) -> RetrievalEngine:
         """Validate index compatibility, then return a query-ready engine — the ``Searcher`` + (only when
         a reranker is configured) the cross-encoder, built from ``Settings``. Refuses on a schema or
-        embedding-fingerprint mismatch."""
+        embedding-fingerprint mismatch. ``llm`` (the bridge components' model) may be injected — a
+        composition root shares its one LLM this way; otherwise one is built from ``Settings`` and owned
+        (closed by :meth:`aclose`). The store + embedder passed in stay the caller's."""
         meta = await repository.index_meta()
         if not meta.get("schema_version"):
             raise RetrievalError("retrieval index has not been built yet (no index_meta)")
@@ -100,10 +113,12 @@ class RetrievalEngine(Engine):
         # lazily (no key/network until ``complete``), unused unless a bridge component (multi_query /
         # llm_judge) calls it; the lean default pipeline never does.
         cross_encoder = OnnxCrossEncoder.create(settings.rerank) if settings is not None else None
-        llm = LanguageModel.create(settings.llm) if settings is not None else None
+        owns_llm = llm is None and settings is not None
+        if owns_llm:
+            llm = LanguageModel.create(settings.llm)
         return cls(
             repository, embedder, cls.build_searcher(settings), cross_encoder,
-            cls.build_license_policy(settings), llm,
+            cls.build_license_policy(settings), llm, owns_llm=owns_llm,
         )
 
     @classmethod
@@ -113,21 +128,41 @@ class RetrievalEngine(Engine):
         *,
         repository: DocumentRepository | None = None,
         embedder: Embedder | None = None,
+        llm: LanguageModel | None = None,
     ) -> RetrievalEngine:
         """Open a query-ready engine from ``Settings`` — connecting the repository (the same store
         ingestion writes) + the shared embedder, then validating via :meth:`open`. A composition root
-        (``TarnRag``) may inject a pre-built ``repository`` + ``embedder`` to share one store/embedder
-        across engines; pass both or neither (mirrors ``IngestionEngine.create``)."""
+        (``TarnRag``) may inject a pre-built ``repository`` + ``embedder`` (and ``llm``) to share them
+        across engines; pass both or neither (mirrors ``IngestionEngine.create``). What this builds, it
+        owns and :meth:`aclose` releases; what is injected stays the caller's."""
         settings = settings or get_settings()
-        if repository is None and embedder is None:
+        built = repository is None and embedder is None
+        if built:
             repository = await DocumentRepository.create(settings.database, settings.EMBEDDING_DIMENSION)
             embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
         elif repository is None or embedder is None:
             raise ValueError("inject both repository and embedder, or neither")
-        return await cls.open(repository, embedder, settings)
+        try:
+            engine = await cls.open(repository, embedder, settings, llm=llm)
+        except BaseException:
+            if built:  # e.g. an index-identity mismatch: release what we just built before re-raising
+                embedder.close()
+                await repository.disconnect()
+            raise
+        engine.owns_repository = engine._owns_embedder = built
+        return engine
 
-    def _context(self) -> RetrievalContext:
-        """The ``(store, embedder, cross-encoder, license policy, llm)`` the pipeline runs against."""
+    async def aclose(self) -> None:
+        """Release what this engine built: its LLM client, its embedder, then (base) its store."""
+        if self._owns_llm and self._llm is not None:
+            await self._llm.aclose()
+        if self._owns_embedder:
+            self.embedder.close()
+        await super().aclose()
+
+    def context(self) -> RetrievalContext:
+        """The ``(store, embedder, cross-encoder, license policy, llm)`` the pipeline runs against — also
+        what an eval sweep scores *alternative* pipeline specs over (``TarnRag.retrieval_context``)."""
         return RetrievalContext(
             self.repository, self.embedder, self._cross_encoder, self._license_policy, self._llm
         )
@@ -135,7 +170,7 @@ class RetrievalEngine(Engine):
     async def search(self, query: Query) -> list[RetrievalResult]:
         """Run the configured retrieval pipeline (retrieve [license/scope pre-filter] → fuse → hydrate →
         merge → rerank → top_k → assemble)."""
-        return await self._pipeline.search(query, self._context())
+        return await self._pipeline.search(query, self.context())
 
     async def search_text(
         self, text: str, *, top_k: int = 8, dense_k: int = 50
@@ -149,7 +184,7 @@ class RetrievalEngine(Engine):
         and any routing decision) — instead of only the final results. The data behind ``TarnRag.explain``
         and the console's ``explain`` command; ``trace.results`` is the same ranking ``search`` returns."""
         trace = SearchTrace(query=query)
-        await self._pipeline.search(query, self._context(), trace)
+        await self._pipeline.search(query, self.context(), trace)
         return trace
 
     async def explain_text(self, text: str, *, top_k: int = 8, dense_k: int = 50) -> SearchTrace:

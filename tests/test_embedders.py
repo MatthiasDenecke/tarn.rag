@@ -216,3 +216,73 @@ def test_onnx_fingerprint_is_sensitive_to_contextualize_tables(tmp_path):
     ctx = OnnxEmbedder(str(tmp_path), model_id="m", contextualize_tables=True)
     assert base.config_fingerprint() != ctx.config_fingerprint()
     assert ctx.embed_meta()["contextualize_tables"] == "True"
+
+
+# ---------------- MED-03 / MED-04 / HIGH-07: identity, prefixes, the tokenizer read, close ----------------
+
+def _fingerprint_of(identity: dict) -> str:
+    return Embedder._fingerprint(identity)
+
+
+def test_api_and_hash_fingerprints_track_the_embed_time_flags_and_keep_their_defaults():
+    """inject_header_path / contextualize_tables change the embedded text, so they must change the
+    fingerprint — but only when ON: an index built with the defaults keeps its fingerprint (and opens)."""
+    for provider in ("openai", "voyage", "gemini", "hash"):
+        base = Embedder.create(EmbeddingSettings(provider=provider, model="m"), 8)
+        default_identity = (
+            {"provider": provider, "embedding_dim": 8, "normalize": "l2"}
+            if provider == "hash"
+            else {"provider": provider, "model": "m", "embedding_dim": 8, "normalize": "l2"}
+        )
+        assert base.config_fingerprint() == _fingerprint_of(default_identity), provider  # unchanged
+        for flag in ("inject_header_path", "contextualize_tables"):
+            on = Embedder.create(EmbeddingSettings(provider=provider, model="m", **{flag: True}), 8)
+            assert on.config_fingerprint() != base.config_fingerprint(), (provider, flag)
+            assert on.embed_meta()[flag] == "True"
+
+
+def test_api_prefixes_reach_the_request_and_the_fingerprint():
+    httpx = pytest.importorskip("httpx")
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body["input"])
+        return httpx.Response(200, json={"data": [{"index": i, "embedding": [1.0, 0.0]} for i in range(len(body["input"]))]})
+
+    settings = EmbeddingSettings(provider="openai", model="e5", api_key="k",
+                                 query_prefix="query: ", passage_prefix="passage: ")
+    e = Embedder.create(settings, 2)
+    e._client = _mock_client(handler)
+    e.embed_passages(["a", "b"])
+    e.embed_query("q")
+    assert bodies == [["passage: a", "passage: b"], ["query: q"]]
+    plain = Embedder.create(EmbeddingSettings(provider="openai", model="e5"), 2)
+    assert e.config_fingerprint() != plain.config_fingerprint()  # prefixes change every vector
+
+
+def test_api_embedder_close_releases_its_client():
+    pytest.importorskip("httpx")
+    e = OpenAIEmbedder(model="m", embedding_dim=2, api_key="k")
+    client = e._http()
+    e.close()
+    assert client.is_closed and e._client is None
+    e.close()  # idempotent
+    assert not e._http().is_closed  # a later embed reopens one
+    e.close()
+
+
+def test_onnx_tokenizer_is_hashed_once_and_a_missing_model_says_how_to_fix_it(tmp_path, monkeypatch):
+    import tarnrag.core.resources.embedder as embedder_module
+
+    (tmp_path / "tokenizer.json").write_text("{}")
+    reads = []
+    real = embedder_module.sha256_file
+    monkeypatch.setattr(embedder_module, "sha256_file", lambda p: reads.append(p) or real(p))
+    e = OnnxEmbedder(str(tmp_path), model_id="m")
+    e.config_fingerprint()
+    e.embed_meta()
+    e.config_fingerprint()
+    assert len(reads) == 1
+    with pytest.raises(FileNotFoundError, match="scripts/fetch_model.py"):
+        OnnxEmbedder(str(tmp_path / "absent"), model_id="m").config_fingerprint()

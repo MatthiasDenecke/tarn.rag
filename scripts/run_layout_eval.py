@@ -207,9 +207,13 @@ async def _run(
             llm = LanguageModel.create(settings.llm)
             print(f"scoring attribution through reader={settings.llm.provider}:{settings.llm.model}"
                   f"{' + hybrid' if hybrid else ''}, table_view={table_view} …")
-            overall, by_seg = await tatqa_attribution(
-                queries, llm, repo, embedder, settings=settings, table_view=table_view, concurrency=concurrency
-            )
+            try:
+                overall, by_seg = await tatqa_attribution(
+                    queries, llm, repo, embedder, settings=settings, table_view=table_view,
+                    concurrency=concurrency,
+                )
+            finally:
+                await llm.aclose()  # the reader's network client
             print("\n" + format_attribution(overall, by_seg))
         else:  # retrieval-only source-hit: dense vs hybrid (vs reranked), each leg's spec pinned explicitly.
             legs = [("DENSE", dense_only), ("HYBRID", HYBRID_RETRIEVAL)]
@@ -224,6 +228,7 @@ async def _run(
                 report = await tatqa_source_hit(queries, repo, embedder, settings=settings, k=k, concurrency=concurrency)
                 print("\n" + format_source_hit(report, tag=f"[{label}]"))
     finally:
+        embedder.close()
         await repo.disconnect()
 
 

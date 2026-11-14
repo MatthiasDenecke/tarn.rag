@@ -125,10 +125,20 @@ async def test_aclose_closes_a_closable_queue(repo):
     assert closed == ["queue"]
 
 
-async def test_aclose_without_a_closable_queue_still_releases_the_store(repo):
-    """The InMemory queue holds nothing to close — ``aclose`` skips it and still releases the store."""
+async def test_aclose_without_a_closable_queue_leaves_an_injected_store_open(repo):
+    """The InMemory queue holds nothing to close — ``aclose`` skips it; the store was injected, so it stays
+    its owner's (closing one engine must not pull a shared store from under the others)."""
     engine, _ = _wire(repo)
-    await engine.aclose()  # no error; repository disconnected (idempotent under the fixture's teardown)
+    calls = []
+    original = repo.disconnect
+
+    async def spy():
+        calls.append("disconnect")
+        await original()
+
+    repo.disconnect = spy
+    await engine.aclose()
+    assert calls == []  # not the engine's to close
 
 
 async def test_unknown_document_status_is_none(repo):

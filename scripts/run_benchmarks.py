@@ -55,12 +55,16 @@ async def _run(
         settings.components[RETRIEVAL_PIPELINE] = json.loads(retrieval_spec)
         tag = " + custom-retrieval"
     llm = LanguageModel.create(settings.llm)
-    if corpus == "pool":
-        await _run_over_pool(
-            dataset, path, limit, hf, sweep, settings, llm, tag, corpus_limit, concurrency, reasoners, grounding
-        )
-    else:
-        await _run_distractor(dataset, path, limit, hf, sweep, settings, llm, tag, reasoners, grounding)
+    try:
+        if corpus == "pool":
+            await _run_over_pool(
+                dataset, path, limit, hf, sweep, settings, llm, tag, corpus_limit, concurrency, reasoners,
+                grounding,
+            )
+        else:
+            await _run_distractor(dataset, path, limit, hf, sweep, settings, llm, tag, reasoners, grounding)
+    finally:
+        await llm.aclose()  # the reader's network client
 
 
 async def _run_distractor(dataset, path, limit, hf, sweep, settings, llm, tag, reasoners, grounding) -> None:
@@ -109,6 +113,7 @@ async def _run_over_pool(
             )
             print(format_comparison({dataset: report}))
     finally:
+        embedder.close()
         await repo.disconnect()
 
 

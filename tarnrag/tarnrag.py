@@ -5,9 +5,10 @@ A small, **output-free** session API over one store: ``ingest`` / ``docs`` / ``d
 :class:`~tarnrag.report.Report` of any non-fatal issues encountered (empty when all went well). Nothing is
 printed and nothing is silently skipped: a UI over the facade (the console, the tiqtasq REST API) renders
 the value and surfaces the report. ``TarnRag`` is the composition root: it builds the one store (the
-repository) and the embedder once and injects both into the engines that run over them (one connection —
-retrieval sees ingests live, and works on an empty store); the generation engine is built lazily on the
-first ``ask``. Use it directly::
+repository), the embedder, and the language model once and injects them into the engines that run over
+them (one connection — retrieval sees ingests live, and works on an empty store; one embedding model; one
+LLM client, shared by generation and any LLM-assisted retriever); the generation engine is built lazily on
+the first ``ask``. It closes what it built, and only that. Use it directly::
 
     async with TarnRag("config.json") as tarn:
         ingested = await tarn.ingest(["path/to/your/files"])
@@ -53,6 +54,7 @@ class TarnRag:
         self._injected_llm = llm
         self._repository: DocumentRepository | None = None
         self._embedder: Embedder | None = None
+        self._llm: LanguageModel | None = None  # the injected model, or the one open() builds
         self._ingestion: IngestionEngine | None = None
         self._retrieval: RetrievalEngine | None = None
         self._generation: GenerationEngine | None = None
@@ -68,11 +70,14 @@ class TarnRag:
         )
         try:
             self._embedder = Embedder.create(self.settings.embedding, self.settings.EMBEDDING_DIMENSION)
+            # One LLM for the session — generation's reader AND any LLM-assisted retriever (hyde /
+            # multi_query / llm_judge). Building it is free (the client connects on first use).
+            self._llm = self._injected_llm or LanguageModel.create(self.settings.llm)
             # Establish/confirm the index identity (cheap, repository-only) so retrieval opens even on a
             # fresh store — without building the ingestion machinery, which waits until something ingests.
             await IngestionEngine.ensure_index_meta(self._repository, self._embedder)
             self._retrieval = await RetrievalEngine.create(
-                self.settings, repository=self._repository, embedder=self._embedder
+                self.settings, repository=self._repository, embedder=self._embedder, llm=self._llm
             )
         except BaseException:
             await self.close()  # release the store we opened before re-raising (e.g. an index mismatch)
@@ -80,13 +85,17 @@ class TarnRag:
         return self
 
     async def close(self) -> None:
-        """Release everything this facade built: the generation LLM (unless it was injected — an
-        injected one is closed by its owner), the ingestion engine (its queue — the pgQueuer pool in
-        distributed mode), and the one shared store."""
-        if self._generation is not None and self._injected_llm is None:
-            await self._generation.llm.aclose()  # the LLM _build_llm created
+        """Release everything this facade built: the engines' own resources (the ingestion queue — the
+        pgQueuer pool in distributed mode), the LLM (unless it was injected — an injected one is closed by
+        its owner), the embedder's network client, and the one shared store. Idempotent."""
         if self._ingestion is not None:
-            await self._ingestion.aclose()  # the queue it built (+ the shared store, idempotently)
+            await self._ingestion.aclose()  # its queue; the store / embedder are ours, not its
+        if self._retrieval is not None:
+            await self._retrieval.aclose()  # it was handed everything — releases nothing of ours
+        if self._llm is not None and self._injected_llm is None:
+            await self._llm.aclose()
+        if self._embedder is not None:
+            self._embedder.close()
         if self._repository is not None:
             await self._repository.disconnect()  # the one store, shared by every engine
 
@@ -105,6 +114,7 @@ class TarnRag:
         that matched nothing, files skipped because their stem (= id) collides with another file's,
         replacements whose source kind differs from the stored document's (probably a different file
         sharing the stem), and documents that failed to ingest — nothing is dropped silently."""
+        self._require_open()
         files, missing = self._expand(paths)
         issues = [Issue("not found", Severity.WARNING, subject=raw) for raw in missing]
         if self.settings.ID_POLICY == "caller":
@@ -144,6 +154,7 @@ class TarnRag:
         """A snapshot of the document repository — document / chunk / embedding counts and the
         document-length distribution. Read-only: it queries the shared store directly, so it never builds
         the ingestion machinery."""
+        self._require_open()
         return Outcome(await self._repository.corpus_stats())
 
     async def delete(self, document_id: str) -> Outcome[bool]:
@@ -153,7 +164,7 @@ class TarnRag:
     async def retrieve(self, query: str, *, top_k: int = 8) -> Outcome[list[RetrievalResult]]:
         """Retrieval only — the ranked, provenance-bearing passages. ``top_k`` mirrors the engine's
         ``search_text`` default."""
-        return Outcome(await self._retrieval.search_text(query, top_k=top_k))
+        return Outcome(await self._require_open().search_text(query, top_k=top_k))
 
     async def explain(self, query: str, *, top_k: int = 8) -> Outcome[SearchTrace]:
         """Retrieval with its inner workings exposed — the same ranked results ``retrieve`` returns
@@ -162,41 +173,51 @@ class TarnRag:
         (fused → merged → reranked → final) with per-component scores, and any routing decision.
         Output-free like the rest of the facade — it returns the data; a UI (the console's ``explain``)
         renders it."""
-        return Outcome(await self._retrieval.explain_text(query, top_k=top_k))
+        return Outcome(await self._require_open().explain_text(query, top_k=top_k))
 
     async def ask(self, query: str) -> Outcome[GenerationResult]:
         """Retrieval + generation — a grounded answer with a proof tree. Needs an LLM."""
         return Outcome(await self._gen().answer_text(query))
 
     def retrieval_context(self) -> RetrievalContext:
-        """The shared ``(store, embedder)`` the retrieval pipelines run against — the seam the eval
-        harness's ``sweep`` uses to score *alternative* pipeline specs over this one index."""
-        return RetrievalContext(self._repository, self._embedder)
+        """Everything the retrieval pipelines run against — the shared store + embedder, and the
+        cross-encoder, license policy and LLM the session's retrieval engine holds — the seam the eval
+        harness's ``sweep`` uses to score *alternative* pipeline specs over this one index (a spec with a
+        reranker or an LLM-assisted retriever gets the same resources ``retrieve`` uses)."""
+        return self._require_open().context()
+
+    def _require_open(self) -> RetrievalEngine:
+        """The retrieval engine :meth:`open` built, or a clear error when the session isn't open (instead
+        of an ``AttributeError`` on ``None`` from deep inside a call)."""
+        if self._retrieval is None:
+            raise RuntimeError(
+                "this TarnRag session isn't open: `await rag.open()` first, or use `async with TarnRag(...) as rag:`"
+            )
+        return self._retrieval
 
     async def _ingestion_engine(self) -> IngestionEngine:
         """The ingestion engine, built lazily on first use (ingest / docs / delete) — a read-only or eval
         session never spins up the orchestrator + queue + worker + sinks. Shares the open store."""
         if self._ingestion is None:
+            self._require_open()
             self._ingestion = await IngestionEngine.create(
                 self.settings, repository=self._repository, embedder=self._embedder
             )
         return self._ingestion
 
     def _gen(self) -> GenerationEngine:
-        """The generation engine, built once over the shared retrieval engine + the configured LLM
-        (the pipeline comes from ``Settings`` via ``GenerationEngine.assemble``)."""
+        """The generation engine, built once over the shared retrieval engine + the session's LLM (the
+        pipeline comes from ``Settings`` via ``GenerationEngine.assemble``). Without an injected model, a
+        missing API key fails here, fast and clearly — before any retrieval."""
         if self._generation is None:
-            llm = self._injected_llm or self._build_llm()
-            self._generation = GenerationEngine.assemble(self._retrieval, llm, self.settings)
+            retrieval = self._require_open()
+            if self._injected_llm is None and not self.settings.llm.resolved_api_key():
+                raise RuntimeError(
+                    f"generation needs an LLM key — set {self.settings.llm.key_env_var()} "
+                    "(the provider / model are in the config)"
+                )
+            self._generation = GenerationEngine.assemble(retrieval, self._llm, self.settings)
         return self._generation
-
-    def _build_llm(self) -> LanguageModel:
-        if not self.settings.llm.resolved_api_key():
-            raise RuntimeError(
-                f"generation needs an LLM key — set {self.settings.llm.key_env_var()} "
-                "(the provider / model are in the config)"
-            )
-        return LanguageModel.create(self.settings.llm)
 
     async def _kind_change_warnings(self, files: list[Path]) -> list[Issue]:
         """A WARNING per file that is about to replace a stored document of a **different source kind**

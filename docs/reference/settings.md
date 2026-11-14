@@ -20,7 +20,7 @@ from the environment via the `GROUP__FIELD` convention (`EMBEDDING__MODEL`,
 |---|---|---|
 | `MODE` | `embedded` | `embedded` runs the whole pipeline in-process (InMemory queue); `distributed` enqueues to pgQueuer. |
 | `EMBEDDING_DIMENSION` | `384` | The embedder's output dimension — the index and repository must match it. |
-| `UPLOAD_DIR` | `./uploads` | Staging dir for streamed bytes (a shared volume in distributed mode). |
+| `UPLOAD_DIR` | `./uploads` | Staging dir for streamed bytes (a shared volume in distributed mode). Embedded mode removes each staged copy once its ingest has run; distributed workers read them later, so expiring them there is the deployment's job. |
 | `ID_POLICY` | `uuid` | How document ids are assigned: `uuid` (engine-assigned) or `caller` (you supply every `source_id`). Strict — a mismatch fails ingestion. |
 
 ## `app` — process flags
