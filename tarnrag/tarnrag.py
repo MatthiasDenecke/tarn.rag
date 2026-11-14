@@ -114,6 +114,7 @@ class TarnRag:
         that matched nothing, files skipped because their stem (= id) collides with another file's,
         replacements whose source kind differs from the stored document's (probably a different file
         sharing the stem), and documents that failed to ingest — nothing is dropped silently."""
+        self._require_open()
         files, missing = self._expand(paths)
         issues = [Issue("not found", Severity.WARNING, subject=raw) for raw in missing]
         if self.settings.ID_POLICY == "caller":
@@ -153,6 +154,7 @@ class TarnRag:
         """A snapshot of the document repository — document / chunk / embedding counts and the
         document-length distribution. Read-only: it queries the shared store directly, so it never builds
         the ingestion machinery."""
+        self._require_open()
         return Outcome(await self._repository.corpus_stats())
 
     async def delete(self, document_id: str) -> Outcome[bool]:
@@ -162,7 +164,7 @@ class TarnRag:
     async def retrieve(self, query: str, *, top_k: int = 8) -> Outcome[list[RetrievalResult]]:
         """Retrieval only — the ranked, provenance-bearing passages. ``top_k`` mirrors the engine's
         ``search_text`` default."""
-        return Outcome(await self._retrieval.search_text(query, top_k=top_k))
+        return Outcome(await self._require_open().search_text(query, top_k=top_k))
 
     async def explain(self, query: str, *, top_k: int = 8) -> Outcome[SearchTrace]:
         """Retrieval with its inner workings exposed — the same ranked results ``retrieve`` returns
@@ -171,7 +173,7 @@ class TarnRag:
         (fused → merged → reranked → final) with per-component scores, and any routing decision.
         Output-free like the rest of the facade — it returns the data; a UI (the console's ``explain``)
         renders it."""
-        return Outcome(await self._retrieval.explain_text(query, top_k=top_k))
+        return Outcome(await self._require_open().explain_text(query, top_k=top_k))
 
     async def ask(self, query: str) -> Outcome[GenerationResult]:
         """Retrieval + generation — a grounded answer with a proof tree. Needs an LLM."""
@@ -182,12 +184,22 @@ class TarnRag:
         cross-encoder, license policy and LLM the session's retrieval engine holds — the seam the eval
         harness's ``sweep`` uses to score *alternative* pipeline specs over this one index (a spec with a
         reranker or an LLM-assisted retriever gets the same resources ``retrieve`` uses)."""
-        return self._retrieval.context()
+        return self._require_open().context()
+
+    def _require_open(self) -> RetrievalEngine:
+        """The retrieval engine :meth:`open` built, or a clear error when the session isn't open (instead
+        of an ``AttributeError`` on ``None`` from deep inside a call)."""
+        if self._retrieval is None:
+            raise RuntimeError(
+                "this TarnRag session isn't open: `await rag.open()` first, or use `async with TarnRag(...) as rag:`"
+            )
+        return self._retrieval
 
     async def _ingestion_engine(self) -> IngestionEngine:
         """The ingestion engine, built lazily on first use (ingest / docs / delete) — a read-only or eval
         session never spins up the orchestrator + queue + worker + sinks. Shares the open store."""
         if self._ingestion is None:
+            self._require_open()
             self._ingestion = await IngestionEngine.create(
                 self.settings, repository=self._repository, embedder=self._embedder
             )
@@ -198,12 +210,13 @@ class TarnRag:
         pipeline comes from ``Settings`` via ``GenerationEngine.assemble``). Without an injected model, a
         missing API key fails here, fast and clearly — before any retrieval."""
         if self._generation is None:
+            retrieval = self._require_open()
             if self._injected_llm is None and not self.settings.llm.resolved_api_key():
                 raise RuntimeError(
                     f"generation needs an LLM key — set {self.settings.llm.key_env_var()} "
                     "(the provider / model are in the config)"
                 )
-            self._generation = GenerationEngine.assemble(self._retrieval, self._llm, self.settings)
+            self._generation = GenerationEngine.assemble(retrieval, self._llm, self.settings)
         return self._generation
 
     async def _kind_change_warnings(self, files: list[Path]) -> list[Issue]:

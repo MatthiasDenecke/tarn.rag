@@ -4,10 +4,13 @@ under its other users (an injected store, embedder, or LLM)."""
 
 import io
 
+import pytest
+
 from tarnrag.core.engine.config import DatabaseSettings, EmbeddingSettings, Settings
 from tarnrag.core.resources.embedder import Embedder
 from tarnrag.core.resources.llm import StaticLanguageModel
 from tarnrag.ingestion import IngestionEngine
+from tarnrag.ingestion.engine.queue import PgQueuerJobQueue
 from tarnrag.ingestion.pipeline.embed import EmbedStage
 from tarnrag.retrieval import RetrievalEngine
 from tarnrag.storage.repository import DocumentRepository
@@ -103,6 +106,38 @@ async def test_ingestion_engine_binds_the_shared_embedder_and_releases_only_its_
     spy.embedder(alone._owned_embedder)
     await alone.aclose()
     assert sorted(spy.closed) == ["embedder", "repo"]
+
+
+@pytest.mark.parametrize("failing_step", ["embedder", "queue"])
+async def test_a_create_that_fails_part_way_releases_what_it_built(tmp_path, monkeypatch, failing_step):
+    """Distributed ``create`` connects the store, then builds the embedder, then connects the queue. When a
+    later step fails (no model, the queue DB down), what the earlier steps built is released before the
+    error propagates."""
+    spy = _Spy()
+    real_repo_create, real_embedder_create = DocumentRepository.create, Embedder.create
+    sqlite = DatabaseSettings(document_url=f"sqlite:///{tmp_path}/own.db")
+
+    async def repo_create(database, dim):  # a real SQLite store stands in for the Postgres one
+        return spy.repo(await real_repo_create(sqlite, dim))
+
+    def embedder_create(embedding, dim):
+        if failing_step == "embedder":
+            raise FileNotFoundError("no model")
+        return spy.embedder(real_embedder_create(embedding, dim))
+
+    async def queue_connect(url, **options):
+        raise ConnectionRefusedError("queue DB down")
+
+    monkeypatch.setattr(DocumentRepository, "create", staticmethod(repo_create))
+    monkeypatch.setattr(Embedder, "create", staticmethod(embedder_create))
+    monkeypatch.setattr(PgQueuerJobQueue, "connect", staticmethod(queue_connect))
+    settings = Settings(
+        _env_file=None, MODE="distributed", EMBEDDING_DIMENSION=8, embedding=EmbeddingSettings(provider="hash"),
+        database=DatabaseSettings(document_url="postgresql://u@localhost/docs", queue_url="postgresql://u@localhost/q"),
+    )
+    with pytest.raises(FileNotFoundError if failing_step == "embedder" else ConnectionRefusedError):
+        await IngestionEngine.create(settings)
+    assert sorted(spy.closed) == (["repo"] if failing_step == "embedder" else ["embedder", "repo"])
 
 
 async def test_embedded_stream_ingest_removes_its_staged_copies(tmp_path):
