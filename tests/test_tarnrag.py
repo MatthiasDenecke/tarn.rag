@@ -80,6 +80,22 @@ def test_from_file_rejects_an_unknown_extension(tmp_path):
         Settings.from_file(cfg)
 
 
+async def test_a_session_used_before_open_says_so(tmp_path):
+    """Every call that needs the store fails with one clear error before ``open()``, rather than an
+    ``AttributeError`` on ``None`` from deep inside the call."""
+    rag = TarnRag(_plumbing_settings(tmp_path), llm=StaticLanguageModel("unused"))
+    with pytest.raises(RuntimeError, match="isn't open"):
+        rag.retrieval_context()
+    for name, call in [
+        ("ingest", lambda: rag.ingest([str(tmp_path)])), ("docs", rag.docs), ("status", rag.status),
+        ("delete", lambda: rag.delete("d1")), ("retrieve", lambda: rag.retrieve("q")),
+        ("explain", lambda: rag.explain("q")), ("ask", lambda: rag.ask("q")),
+    ]:
+        with pytest.raises(RuntimeError, match="isn't open"):
+            await call()
+        assert rag._ingestion is None, name  # nothing was half-built along the way
+
+
 async def test_open_wires_shared_resources_then_close_releases(tmp_path):
     """The composition root, end to end without a model: ``__init__`` leaves the engines unbuilt; the
     context manager's ``open`` builds the repository + embedder once and the retrieval engine over them;
