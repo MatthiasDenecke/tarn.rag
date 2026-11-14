@@ -8,7 +8,8 @@ component depends only on its slice — env vars use the ``GROUP__FIELD`` conven
 ``UPLOAD_DIR``) stay top-level.
 
 The default pipeline compositions live here too (``_fill_default_components`` fills
-``Settings.components``); the engines' ``build_*`` methods only read them.
+``Settings.components``); the engines' ``build_*`` methods (and the facade, for conversation memory)
+only read them.
 """
 
 from __future__ import annotations
@@ -42,6 +43,10 @@ LICENSE_POLICY = "license_policy"
 # opt-in layer, so retrieval-only Settings carry no generation spec; ``GenerationEngine`` falls back to a
 # default when the key is absent (the same posture ``RetrievalEngine`` takes for its own default).
 GENERATION_PIPELINE = "generation_pipeline"
+# The short-term conversational context layer (doc/conversation-memory-design.md): a ConversationMemory
+# spec the ``TarnRag`` facade applies in front of retrieve / explain / ask. Default-filled DISABLED —
+# memory is opt-in (``enabled: true``), so an unconfigured Settings stays stateless.
+CONVERSATION_MEMORY = "conversation_memory"
 
 
 class AppSettings(BaseModel):
@@ -250,6 +255,12 @@ class Settings(BaseSettings):
         # The retrieval license policy (ModusQ §5.6 default): purpose → permitted license classes, with
         # third_party_copyrighted never permitted. Override the spec to tune the per-purpose map.
         self.components.setdefault(LICENSE_POLICY, {"class_name": "default_license"})
+        # Conversation memory: present so a Settings is self-complete, but OFF — every call stays
+        # stateless (no store read, no rewrite call, no turn written) until a config sets
+        # ``enabled: true``. The window / contextualizer defaults live on ConversationMemory.Config.
+        self.components.setdefault(
+            CONVERSATION_MEMORY, {"class_name": "conversation_memory", "enabled": False}
+        )
         return self
 
     @model_validator(mode="after")

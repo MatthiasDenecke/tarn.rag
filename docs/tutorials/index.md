@@ -18,6 +18,8 @@ after the two tutorials above.
    grounded generation with a proof tree. Zero infrastructure, all offline.
 4. [Part II — the failure-driven ladder](part-ii/index.md) — each rung adds one config knob, shows a
    query that works and one that fails, and the next rung repairs the failure.
+5. [Part III — conversations](part-iii/index.md) — the same two-turn conversation without and with
+   conversation memory: a follow-up question searched as typed, then rewritten first. Runs offline.
 
 Looking for something else? Recipes for a specific task live in [how-to guides](../how-to/index.md).
 

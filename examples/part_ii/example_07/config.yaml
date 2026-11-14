@@ -102,3 +102,14 @@ components:
     abstain: true                                      # ← refuse rather than return an unsupported answer
     min_grounded: 1.0                                  # every claim must be grounded (1.0 = strict)
     refusal: "I don't have enough grounded evidence to answer that confidently."
+
+  # --- conversation memory: OFF — every Part II rung asks standalone questions --
+  # Pinned explicitly, like everything else here (no reliance on the library default), so a default
+  # change can never turn a rung into a conversation. Part III switches it on.
+  conversation_memory:
+    class_name: conversation_memory
+    enabled: false          # off: every question stands alone
+    session_id: ""          # (the rest is inert while off, and listed so no default is relied on)
+    max_turns: 6
+    max_answer_chars: 600
+    contextualizer: { class_name: condense, max_tokens: 256, temperature: 0.0 }

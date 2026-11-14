@@ -9,6 +9,8 @@ it. If you're new to tarn.rag, start with the [tutorials](../tutorials/index.md)
   query-routed retrieval by editing one component spec.
 - [Use hosted embedding APIs](use-hosted-embeddings.md) — OpenAI / Voyage / Gemini embedders in
   place of the local ONNX model.
+- [Enable conversation memory](enable-conversation-memory.md) — make follow-up questions resolve
+  against the last few turns, with one config flag.
 
 Every knob these guides touch is documented exhaustively in the [reference](../reference/index.md).
 

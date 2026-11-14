@@ -11,7 +11,8 @@ proof tree).
   `python -m tarnrag.console cfg.yaml`; a thin `run.py` narrates the good-vs-bad cases and prints the
   explained breakdown.
 - **YAML configs, fully explicit, heavily commented.** No reliance on Python defaults — every config
-  enumerates every stage and component parameter (incl. all four `components` keys, since
+  enumerates every stage and component parameter (incl. every `components` key — the four pipeline /
+  policy specs plus `conversation_memory`, pinned off — since
   `Settings._fill_default_components` would otherwise fill them). **Acceptance test:** if a Python
   default changes, the example configs still produce the same results.
 - **`explain()` is a `TarnRag` method that returns data, never renders.** It returns

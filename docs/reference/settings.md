@@ -102,7 +102,7 @@ Built only when a `GenerationEngine` is created — retrieval-only deployments n
 ## `components` — pipeline compositions
 
 `Settings.components` maps names to component specs (each a `{"class_name": …}` document — see the
-[component catalog](components.md)). Four keys are recognized, and defaults are filled in
+[component catalog](components.md)). Five keys are recognized, and defaults are filled in
 automatically so a `Settings` is always self-complete:
 
 | Key | Default |
@@ -111,6 +111,21 @@ automatically so a `Settings` is always self-complete:
 | `retrieval_pipeline` | hybrid: `dense` + `sparse` retrievers, `rrf` fuser |
 | `generation_pipeline` | `decomposition` reasoner (set `single_hop` for the cheap one-call path) |
 | `license_policy` | `default_license` (purpose → permitted license classes; `third_party_copyrighted` never permitted) |
+| `conversation_memory` | `conversation_memory` with `enabled: false` — every call is stateless until a config switches it on |
+
+### `conversation_memory`
+
+The short-term conversational context layer, applied by the `TarnRag` facade in front of `retrieve`,
+`explain` and `ask` (see [enable conversation memory](../how-to/enable-conversation-memory.md)). It is
+a component spec, so it is set in a config file rather than through a `GROUP__FIELD` env var.
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | The switch. Off: no store read, no rewrite call, no turn written. |
+| `session_id` | `""` | The conversation a `TarnRag` joins on open. `""` starts a fresh one each time; an id resumes that conversation. The `session_id` argument of `TarnRag(...)` overrides it. |
+| `max_turns` | `6` | The short-term window — how many recent turns the rewriter is shown. Must be ≥ 1. Older turns stay stored. |
+| `max_answer_chars` | `600` | Each remembered answer is cut to this length before the rewriter sees it. Must be ≥ 1. |
+| `contextualizer` | `{class_name: condense}` | How the window is used — a [contextualizer](components.md#conversation-componentsconversation_memory) spec. |
 
 ## Validation rules
 

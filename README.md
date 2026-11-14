@@ -13,6 +13,9 @@ complex systems that can be run from the command line.
   scope pre-filter → auto-merge → cross-encoder rerank, with layout-grade provenance on every hit.
 - **Generation** — multi-hop reasoning (single-hop / iterative / decomposition) → grounding check →
   proof tree + evidence, over the retrieval substrate. LLM-pluggable; retrieval stays LLM-free by default.
+- **Conversation memory** *(opt-in)* — a follow-up question is rewritten against the last few turns into
+  a standalone one before it is searched; one config flag, off by default. See
+  [enable conversation memory](./docs/how-to/enable-conversation-memory.md).
 
 ## Install
 

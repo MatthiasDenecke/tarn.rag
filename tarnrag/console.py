@@ -18,8 +18,16 @@ the config. Then type commands at the ``tarn>`` prompt::
     explain <query>      retrieval with its inner workings — each retriever's candidates before fusion,
                          the ranking at every pipeline stage (with component scores), and any routing
     ask <query>          retrieval + generation — the grounded answer + its proof tree
+    history              the current conversation — each turn as typed, as understood, and its answer
+    new                  start a fresh conversation (the previous transcript stays in the store)
+    forget               delete the current conversation's turns from the store
     help                 show the commands
     quit                 exit
+
+The last three belong to **conversation memory** (opt-in: ``components.conversation_memory.enabled``).
+With it on, the whole console run is one conversation: a follow-up typed into ``ask`` / ``retrieve`` /
+``explain`` is first rewritten into a standalone question, and the console shows the rewrite
+(``↳ understood as: …``) so what was actually searched is never hidden. With it off they say so.
 
 This is purely the **UI**: a rich parse-and-print REPL that owns all output and delegates the work to a
 :class:`tarnrag.TarnRag` through its high-level methods. Rendering needs the ``console`` extra
@@ -47,9 +55,10 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from tarnrag.contracts import CorpusStatus, RetrievalResult
+from tarnrag.contracts import ConversationTurn, CorpusStatus, RetrievalResult
+from tarnrag.conversation.types import CONTEXTUALIZED
 from tarnrag.generation.types import GenerationResult
-from tarnrag.report import Report, Severity
+from tarnrag.report import Outcome, Report, Severity
 from tarnrag.retrieval.types import RetrieverCandidates, SearchTrace
 from tarnrag.tarnrag import TarnRag
 
@@ -58,7 +67,7 @@ class Console:
     """A rich REPL over a :class:`~tarnrag.TarnRag` session — all output lives here. Construct with
     an (opened) ``TarnRag`` and call :meth:`run`; the console never touches the engines directly, only the
     facade's high-level methods (``ingest`` / ``docs`` / ``delete`` / ``retrieve`` / ``explain`` /
-    ``ask``). Owns its rich output sink (``self._out``) and the result/trace rendering."""
+    ``ask`` / ``history`` / ``new_conversation`` / ``forget``). Owns its rich output sink (``self._out``) and the result/trace rendering."""
 
     _COMMANDS: ClassVar[list[tuple[str, str]]] = [
         ("ingest <path> ...", "ingest (or re-ingest) files; a directory ingests the files in it"),
@@ -68,6 +77,9 @@ class Console:
         ("retrieve <query>", "retrieval only — the ranked passages"),
         ("explain <query>", "retrieval with its inner workings — per-retriever candidates, per-stage ranking"),
         ("ask <query>", "retrieval + generation — the grounded answer + its proof tree"),
+        ("history", "the current conversation — each turn as typed, as understood, and its answer"),
+        ("new", "start a fresh conversation (the previous transcript stays in the store)"),
+        ("forget", "delete the current conversation's turns from the store"),
         ("help", "show this list"),
         ("quit", "exit"),
     ]
@@ -86,6 +98,7 @@ class Console:
         self._out.print(
             f"[bold]tarn.rag console[/]  [dim]{escape(self._tarn.settings.database.document_url)}[/]"
         )
+        self._out.print(self._memory_banner())
         self._out.print("Type [cyan]help[/], or [cyan]quit[/] to exit.  [dim](↑/↓ for history)[/]\n")
         handlers = {
             "help": self._do_help,
@@ -96,6 +109,9 @@ class Console:
             "retrieve": self._do_retrieve,
             "explain": self._do_explain,
             "ask": self._do_ask,
+            "history": self._do_history,
+            "new": self._do_new,
+            "forget": self._do_forget,
         }
         while True:
             try:
@@ -184,6 +200,7 @@ class Console:
             self._out.print("usage: retrieve <query>", style="dim")
             return
         outcome = await self._tarn.retrieve(arg)
+        self._show_understood(outcome)
         if not outcome.value:
             self._out.print("[yellow]no results — ingest some documents first[/]")
         else:
@@ -206,8 +223,47 @@ class Console:
             self._out.print("usage: ask <query>", style="dim")
             return
         outcome = await self._tarn.ask(arg)
+        self._show_understood(outcome)
         self._out.print(self.create_answer_view(outcome.value))
         self._render_report(outcome.report)
+
+    async def _do_history(self, _arg: str) -> None:
+        outcome = await self._tarn.history()
+        if outcome.value:
+            self._out.print(self.create_history_view(outcome.value))
+            self._out.print(f"[dim]{len(outcome.value)} turn(s) · session {escape(self._tarn.session_id)}[/]")
+        elif outcome.report.ok:  # memory is on, nothing asked yet (memory off is explained by the report)
+            self._out.print("[yellow]nothing remembered yet — this conversation has no turns[/]")
+        self._render_report(outcome.report)
+
+    async def _do_new(self, _arg: str) -> None:
+        outcome = await self._tarn.new_conversation()
+        if outcome.value:
+            self._out.print(
+                f"[green]new conversation[/] · session {escape(outcome.value)}  "
+                "[dim](the previous transcript is kept in the store)[/]"
+            )
+        self._render_report(outcome.report)
+
+    async def _do_forget(self, _arg: str) -> None:
+        outcome = await self._tarn.forget()
+        if outcome.report.ok:
+            self._out.print(f"[green]forgot[/] {outcome.value} turn(s)")
+        self._render_report(outcome.report)
+
+    def _memory_banner(self) -> str:
+        """One start-up line saying whether this run is a conversation, and which one."""
+        session = self._tarn.session_id
+        if session is None:
+            return "[dim]conversation memory: off — every question stands alone[/]"
+        return f"conversation memory: [green]on[/]  [dim]session {escape(session)}[/]"
+
+    def _show_understood(self, outcome: Outcome) -> None:
+        """After an ``ask`` / ``retrieve``: if conversation memory rewrote the question, print what it
+        was understood as — straight from the call's ``Outcome.understood_as``, no second call. Silent
+        when memory is off or the question ran as typed."""
+        if outcome.understood_as is not None:
+            self._out.print(f"[magenta]↳ understood as:[/] {escape(outcome.understood_as)}")
 
     # ---------------- rendering (static factory methods — reusable without a live session) ----------------
 
@@ -255,6 +311,9 @@ class Console:
         identity/provenance carried on each final result. Pure rendering — returns a renderable."""
         by_id = {r.chunk_id: r for stage in trace.stages for r in stage.results}
         parts: list = [Text.assemble(("query: ", "bold"), trace.query.text)]
+        asked = Console._asked(trace.query)
+        if asked is not None:  # conversation memory rewrote a follow-up: show what was actually typed
+            parts.append(Text(f"asked: {asked}  (rewritten against the conversation)", style="magenta"))
         if trace.route_path:  # one hop per router passed through (nested routers each add theirs)
             hops = " → ".join(f"query_type={qt or '∅'} → route {route!r}" for qt, route in trace.route_path)
             parts.append(Text(f"routed: {hops}", style="magenta"))
@@ -342,6 +401,52 @@ class Console:
             for c in step.citations:
                 node.add(f"[dim]cite[/] {escape(Console._cite(c))}")
         return Group(panel, tree)
+
+    @staticmethod
+    def create_history_view(turns: list[ConversationTurn]) -> Table:
+        """The conversation so far, one row per turn: what was typed, what it was understood as (``—``
+        when it was used as typed), and the answer — marked ✓ grounded, ✗ not fully grounded, ``?`` not
+        checked (no grounding check ran), or ``abstained``; a ``retrieve`` turn has no answer. Backs the
+        ``history`` command."""
+        table = Table(
+            title="conversation", show_edge=False, header_style="bold", title_justify="left",
+            title_style="green",
+        )
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("via", style="dim")
+        table.add_column("asked", style="cyan")
+        table.add_column("understood as")
+        table.add_column("answer")
+        for turn in turns:
+            table.add_row(
+                str(turn.ordinal + 1),
+                turn.kind,
+                escape(turn.question),
+                escape(turn.standalone_question) if turn.rewritten else "[dim]—[/]",
+                Console._turn_answer(turn),
+            )
+        return table
+
+    @staticmethod
+    def _turn_answer(turn: ConversationTurn) -> str:
+        if turn.answer is None:
+            return "[dim](search only)[/]"
+        answer = escape(Console._snippet(turn.answer, 70))
+        if turn.abstained:
+            return f"[yellow]abstained[/] {answer}"
+        if turn.grounded is None:
+            return f"[dim]?[/] {answer}"  # no grounding check ran: unchecked, not grounded
+        return f"{'[green]✓[/]' if turn.grounded else '[red]✗[/]'} {answer}"
+
+    @staticmethod
+    def _asked(query) -> str | None:
+        """The original wording of a query that conversation memory rewrote (from its
+        ``contextualized`` annotation, which only a rewritten query carries) — ``None`` when the query
+        is as typed."""
+        for annotation in query.annotations:
+            if annotation.type == CONTEXTUALIZED:
+                return annotation.value.get("original")
+        return None
 
     @staticmethod
     def create_status_view(status: CorpusStatus) -> Table:

@@ -52,7 +52,13 @@ class Report:
 @dataclass(frozen=True)
 class Outcome[T]:
     """A facade call's result: the ``value`` it produced, plus a ``report`` of any issues encountered
-    alongside it (empty when all went well)."""
+    alongside it (empty when all went well).
+
+    ``understood_as`` is set only by ``retrieve`` / ``explain`` / ``ask`` when conversation memory
+    rewrote the question: it is the standalone question the call actually ran (what a UI shows as
+    "understood as"). It is ``None`` when the question ran as typed, when memory is off, and for every
+    other call. It is part of the result rather than the report, because a rewrite is not an issue."""
 
     value: T
     report: Report = field(default_factory=Report)
+    understood_as: str | None = None

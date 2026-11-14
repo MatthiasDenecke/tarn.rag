@@ -9,7 +9,7 @@ import pytest
 from rich.console import Console as RichConsole
 
 from tarnrag.console import Console, _load_dotenv, main
-from tarnrag.contracts import CorpusStatus, RetrievalResult
+from tarnrag.contracts import ConversationTurn, CorpusStatus, RetrievalResult
 from tarnrag.generation.types import GenerationResult
 from tarnrag.report import Issue, Outcome, Report, Severity
 from tarnrag.retrieval.types import Query, SearchStage, SearchTrace
@@ -17,11 +17,13 @@ from tarnrag.retrieval.types import Query, SearchStage, SearchTrace
 
 class FakeTarn:
     """Stand-in for ``TarnRag``: each facade method records its call and returns a preconfigured ``Outcome``
-    (or raises, if one is configured as an exception)."""
+    (or raises, if one is configured as an exception). ``session_id`` is ``None`` (conversation memory
+    off) unless given — then ``history`` / ``new_conversation`` / ``forget`` are served the same way."""
 
-    def __init__(self, **returns):
+    def __init__(self, session_id=None, **returns):
         self._returns = returns
         self.calls: list[tuple] = []
+        self.session_id = session_id
         self.settings = types.SimpleNamespace(
             database=types.SimpleNamespace(document_url="sqlite:///corpus.db")
         )
@@ -53,6 +55,15 @@ class FakeTarn:
 
     async def ask(self, query):
         return self._ret("ask", query)
+
+    async def history(self, last=None):
+        return self._ret("history", last)
+
+    async def new_conversation(self):
+        return self._ret("new_conversation")
+
+    async def forget(self):
+        return self._ret("forget")
 
 
 def _console(tarn: FakeTarn) -> Console:
@@ -200,6 +211,139 @@ async def test_help_lists_the_commands():
     await c._do_help("")
     text = _text(c)
     assert "ingest" in text and "retrieve" in text and "ask" in text
+    assert "history" in text and "new" in text and "forget" in text  # the conversation commands
+
+
+# ---------------- conversation memory ----------------
+
+_MEMORY_OFF = Report((Issue("conversation memory is disabled — set …enabled: true", Severity.WARNING),))
+
+
+def _turn(question, standalone=None, *, kind="ask", ordinal=0, **fields):
+    if kind == "ask":
+        fields = {"answer": "ISO VG 68", "grounded": True, "abstained": False, **fields}
+    return ConversationTurn(
+        session_id="s1", kind=kind, question=question,
+        standalone_question=standalone or question, ordinal=ordinal, **fields,
+    )
+
+
+async def test_ask_shows_what_a_follow_up_was_understood_as():
+    """A rewrite is never hidden: the console prints the standalone question that was actually asked,
+    straight from the call's ``Outcome.understood_as``, before the answer and without a second call."""
+    tarn = FakeTarn(
+        session_id="s1",
+        ask=Outcome(
+            GenerationResult(answer="ISO VG 68", proof=[], evidence=[]),
+            understood_as="Which oil does the GMV frame need?",
+        ),
+    )
+    c = _console(tarn)
+    await c._do_ask("which oil does it need?")
+    text = _text(c)
+    assert "understood as:" in text and "Which oil does the GMV frame need?" in text
+    assert text.index("understood as:") < text.index("ISO VG 68")  # the interpretation precedes the answer
+    assert [name for name, _ in tarn.calls] == ["ask"]  # no history read
+
+
+async def test_retrieve_shows_what_a_follow_up_was_understood_as():
+    tarn = FakeTarn(session_id="s1", retrieve=Outcome([_result()], understood_as="pump seal replacement"))
+    c = _console(tarn)
+    await c._do_retrieve("and its seals?")
+    assert "understood as:" in _text(c) and "pump seal replacement" in _text(c)
+    assert [name for name, _ in tarn.calls] == ["retrieve"]
+
+
+async def test_a_question_used_as_typed_prints_no_understood_line():
+    tarn = FakeTarn(session_id="s1", ask=Outcome(GenerationResult(answer="GMV", proof=[], evidence=[])))
+    c = _console(tarn)
+    await c._do_ask("which frame is the TX-200 built on?")
+    assert "understood as" not in _text(c)
+
+
+async def test_with_memory_off_ask_and_retrieve_never_read_history():
+    tarn = FakeTarn(
+        ask=Outcome(GenerationResult(answer="x", proof=[], evidence=[])), retrieve=Outcome([_result()])
+    )
+    c = _console(tarn)
+    await c._do_ask("q")
+    await c._do_retrieve("q")
+    assert [name for name, _ in tarn.calls] == ["ask", "retrieve"]  # no history call
+    assert "understood as" not in _text(c)
+
+
+async def test_history_renders_each_turn_as_typed_as_understood_and_its_answer():
+    turns = [
+        _turn("which frame is the TX-200 built on?", answer="Cooper-Bessemer GMV"),
+        _turn("which oil does it need?", "Which oil does the GMV frame need?", ordinal=1),
+        _turn("pump seals", kind="retrieve", ordinal=2),
+        _turn("warranty?", ordinal=3, answer="Not enough evidence.", grounded=False, abstained=True),
+        _turn("flow rate?", ordinal=4, answer="about 40 l/min", grounded=False),
+        _turn("inlet pressure?", ordinal=5, answer="2 bar", grounded=None),  # no grounding check ran
+    ]
+    c = _console(FakeTarn(session_id="s1", history=Outcome(turns)))
+    await c._do_history("")
+    text = _text(c)
+    assert "which oil does it need?" in text and "Which oil does the GMV frame need?" in text
+    assert "✓ Cooper-Bessemer GMV" in text  # a grounded answer
+    assert "? 2 bar" in text and "✓ 2 bar" not in text  # an unchecked answer is not shown as grounded
+    assert "(search only)" in text  # the retrieve turn has no answer
+    assert "abstained" in text and "Not enough evidence." in text
+    assert "✗ about 40 l/min" in text  # answered, but not fully grounded
+    assert "6 turn(s)" in text and "s1" in text
+
+
+async def test_history_of_a_new_conversation_says_nothing_is_remembered():
+    c = _console(FakeTarn(session_id="s1", history=Outcome([])))
+    await c._do_history("")
+    assert "nothing remembered yet" in _text(c)
+
+
+async def test_new_starts_a_fresh_conversation_and_says_the_transcript_is_kept():
+    c = _console(FakeTarn(session_id="s1", new_conversation=Outcome("s2")))
+    await c._do_new("")
+    text = _text(c)
+    assert "new conversation" in text and "s2" in text and "kept" in text
+
+
+async def test_forget_reports_how_many_turns_were_deleted():
+    c = _console(FakeTarn(session_id="s1", forget=Outcome(3)))
+    await c._do_forget("")
+    assert "forgot" in _text(c) and "3 turn(s)" in _text(c)
+
+
+async def test_the_conversation_commands_explain_themselves_when_memory_is_off():
+    """Not a silent no-op: each prints the facade's warning that memory is disabled — and nothing that
+    reads like success."""
+    tarn = FakeTarn(
+        history=Outcome([], _MEMORY_OFF), new_conversation=Outcome(None, _MEMORY_OFF),
+        forget=Outcome(0, _MEMORY_OFF),
+    )
+    for command in ("_do_history", "_do_new", "_do_forget"):
+        c = _console(tarn)
+        await getattr(c, command)("")
+        text = _text(c)
+        assert "warning:" in text and "disabled" in text
+        assert "forgot" not in text and "new conversation" not in text and "nothing remembered" not in text
+
+
+async def test_the_banner_states_whether_memory_is_on(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "quit")
+    on, off = _console(FakeTarn(session_id="abc123")), _console(FakeTarn())
+    await on.run()
+    await off.run()
+    assert "conversation memory: on" in _text(on) and "abc123" in _text(on)
+    assert "conversation memory: off" in _text(off)
+
+
+async def test_run_dispatches_the_conversation_commands(monkeypatch):
+    lines = iter(["history", "new", "forget", "quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    tarn = FakeTarn(
+        session_id="s1", history=Outcome([]), new_conversation=Outcome("s2"), forget=Outcome(0)
+    )
+    await _console(tarn).run()
+    assert [name for name, _ in tarn.calls] == ["history", "new_conversation", "forget"]
 
 
 # ---------------- report rendering ----------------

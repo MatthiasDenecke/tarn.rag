@@ -7,6 +7,7 @@ import pytest
 from bausatz import ComponentFactory
 from pydantic import ValidationError
 
+import tarnrag.conversation
 import tarnrag.generation
 import tarnrag.ingestion
 import tarnrag.retrieval
@@ -14,7 +15,7 @@ from tarnrag.core.engine.config import Settings
 from tarnrag.retrieval.components.retriever import Retriever
 
 # Importing the domain packages is what registers their components (import = register).
-_DOMAIN_PACKAGES = (tarnrag.generation, tarnrag.ingestion, tarnrag.retrieval)
+_DOMAIN_PACKAGES = (tarnrag.conversation, tarnrag.generation, tarnrag.ingestion, tarnrag.retrieval)
 
 
 def test_domain_components_register_into_the_bausatz_factory():
@@ -23,6 +24,7 @@ def test_domain_components_register_into_the_bausatz_factory():
         "pipeline", "LoadAndParse", "Chunk", "Embed", "structure_aware", "table_json",
         "retrieval_pipeline", "dense", "sparse", "rrf", "cross_encoder", "intent",
         "generation_pipeline", "single_hop", "decomposition", "answerability",
+        "conversation_memory", "condense",
     ):
         assert tag in factory.registry, tag
 

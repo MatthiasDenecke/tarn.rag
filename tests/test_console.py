@@ -9,7 +9,13 @@ import io
 from rich.console import Console as RichConsole
 
 from tarnrag.console import Console
-from tarnrag.contracts import Candidate, ChunkProvenance, CorpusStatus, RetrievalResult
+from tarnrag.contracts import (
+    Annotation,
+    Candidate,
+    ChunkProvenance,
+    CorpusStatus,
+    RetrievalResult,
+)
 from tarnrag.generation.types import Citation, GenerationResult, ProofStep
 from tarnrag.retrieval.types import Query, RetrieverCandidates, SearchStage, SearchTrace
 
@@ -74,6 +80,32 @@ def test_trace_view_renders_query_routing_retrievers_and_stages():
     assert "dense" in text and "sparse" in text          # per-retriever sections
     assert "fused" in text and "final" in text           # the per-stage tables
     assert "tank-inspection" in text                     # candidate hydrated from the stage results
+
+
+def test_trace_view_shows_the_original_wording_of_a_rewritten_follow_up():
+    """With conversation memory on, ``explain``'s trace carries the EXECUTED query plus a
+    ``contextualized`` annotation holding what was typed — the view shows both, so the rewrite is
+    visible exactly where the search is being explained."""
+    hits = [_result("c1", "GMV frames require ISO VG 68", 0.9, {"dense": 0.2}, "lubrication-spec")]
+    rewritten = Query(
+        text="Which oil grade does the GMV frame require?",
+        annotations=[
+            Annotation(
+                producer="condense", type="contextualized",
+                value={"original": "Which oil grade does it require?", "turns_used": 1},
+                deterministic=False,
+            )
+        ],
+    )
+    text = _render(Console.create_trace_view(SearchTrace(query=rewritten, stages=[SearchStage("final", hits)])))
+    assert "query: Which oil grade does the GMV frame require?" in text
+    assert "asked: Which oil grade does it require?" in text
+
+
+def test_trace_view_of_a_query_used_as_typed_has_no_asked_line():
+    hits = [_result("c1", "alpha", 0.9, {"dense": 0.2}, "doc")]
+    text = _render(Console.create_trace_view(SearchTrace(query=Query(text="alpha"), stages=[SearchStage("final", hits)])))
+    assert "asked:" not in text
 
 
 def test_create_answer_view_grounded_shows_answer_and_proof():

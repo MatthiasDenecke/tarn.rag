@@ -5,8 +5,10 @@ Public API::
     from tarnrag import IngestionEngine, RetrievalEngine, run_worker, Query, DocumentStatus
     from tarnrag import TarnRag  # the high-level facade over all three engines
     from tarnrag import Outcome, Report, Issue, Severity  # what every facade call returns
+    from tarnrag import ConversationTurn  # one remembered turn (TarnRag.history, with memory on)
 """
 
+from tarnrag.contracts import ConversationTurn
 from tarnrag.ingestion import (
     DocumentStatus,
     DocumentSummary,
@@ -25,6 +27,7 @@ from tarnrag.retrieval import (
 from tarnrag.tarnrag import TarnRag  # imported last — wires the three engines together
 
 __all__ = [
+    "ConversationTurn",
     "DocumentStatus",
     "DocumentSummary",
     "IngestionEngine",

@@ -18,6 +18,8 @@ Step-by-step walkthroughs from zero to a working setup:
   generation.
 - [Part II — the failure-driven ladder](tutorials/part-ii/index.md) — one config knob per rung, each
   fixing the previous rung's failure.
+- [Part III — conversations](tutorials/part-iii/index.md) — a follow-up question without and with
+  conversation memory.
 
 ## [How-to guides](how-to/index.md) — recipes for a task
 
@@ -29,6 +31,8 @@ Focused instructions for readers who know what they want:
   reranked, or query-routed retrieval by editing one component spec.
 - [Use hosted embedding APIs](how-to/use-hosted-embeddings.md) — OpenAI / Voyage / Gemini embedders
   in place of the local ONNX model.
+- [Enable conversation memory](how-to/enable-conversation-memory.md) — resolve follow-up questions
+  against the last few turns.
 
 ## [Reference](reference/index.md) — look things up
 
@@ -42,8 +46,8 @@ Exhaustive and factual:
 
 ## [Explanation](explanation/index.md) — how it works and why
 
-- [Architecture overview](explanation/architecture.md) — the three engines, the one store, and the
-  invariants that hold the design together.
+- [Architecture overview](explanation/architecture.md) — the three engines, the one store, the
+  optional conversation layer in front of them, and the invariants that hold the design together.
 
 ## Related material elsewhere in the repo
 

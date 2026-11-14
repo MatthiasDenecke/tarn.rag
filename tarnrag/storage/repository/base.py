@@ -10,6 +10,8 @@ import statistics
 import uuid
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -28,13 +30,17 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from tarnrag.contracts import (
+    TURN_KINDS,
     Candidate,
     Chunk,
     ChunkRecord,
     ChunkStore,
+    ConversationStore,
+    ConversationTurn,
     CorpusStatus,
     Document,
     DocumentFacts,
@@ -86,7 +92,30 @@ _CHUNK_PROVENANCE = {
 _CHUNK_ID_NAMESPACE = uuid.UUID("3f0d1c2a-7b4e-5d6f-8a9b-0c1d2e3f4a5b")
 
 
-class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFactsSource):
+# How often append_turn tries when writers on one session collide on the next ordinal. Every round lets
+# exactly one of the colliding writers in (the rest see its row on the next try), so this bounds how many
+# may append to one conversation at the same instant; in practice that is two processes, not dozens.
+_APPEND_ATTEMPTS = 32
+
+
+def _is_duplicate_key(exc: IntegrityError) -> bool:
+    """Whether ``exc`` is a primary-key / unique conflict (retryable), not another constraint: Postgres
+    reports SQLSTATE 23505, SQLite a "UNIQUE constraint failed" message."""
+    orig = exc.orig
+    return getattr(orig, "sqlstate", None) == "23505" or "UNIQUE constraint failed" in str(orig)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """A stored timestamp as timezone-aware UTC. Postgres returns it aware; SQLite stores no offset, so
+    its naive value (written as UTC) is labelled UTC."""
+    if value is None:
+        return None
+    return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+class DocumentRepository(
+    ChunkStore, RetrievalStore, JobStatusSource, DocumentFactsSource, ConversationStore
+):
     """
     SQLAlchemy Core repository shared by ingestion and retrieval.
 
@@ -315,6 +344,31 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             self.metadata,
             Column("key", Text, primary_key=True),
             Column("value", Text, nullable=False),
+        )
+        # The conversation layer's memory (doc/conversation-memory-design.md §4): one row per turn,
+        # keyed by (conversation, position). NOT part of the §8 index — like ``job_status`` it is a
+        # Python-side table that merely lives in the one store; the C++ reader ignores it. Additive:
+        # ``create_all`` adds it to an existing store, so SCHEMA_VERSION is unaffected. Turns are kept
+        # until ``delete_conversation``; the short-term window is a read-side LIMIT.
+        self.conversation_turns_table = Table(
+            "conversation_turns",
+            self.metadata,
+            Column("session_id", Text, nullable=False),
+            Column("ordinal", Integer, nullable=False),       # 0-based position in the conversation
+            Column("kind", Text, nullable=False),             # which operation recorded it
+            Column("question", Text, nullable=False),         # as typed
+            Column("standalone_question", Text, nullable=False),  # as executed (== question if not rewritten)
+            Column("answer", Text),                           # ask turns only
+            Column("grounded", Integer),                      # ask turns only (0/1)
+            Column("abstained", Integer),                     # ask turns only (0/1)
+            # Written by append_turn as UTC (not a server default: SQLite's is UTC, Postgres's the session's
+            # local time zone — the same conversation would read back hours apart on the two backends).
+            Column("created_at", TIMESTAMP(timezone=True), nullable=False),
+            PrimaryKeyConstraint("session_id", "ordinal"),
+            CheckConstraint(
+                "kind IN (" + ", ".join(f"'{k}'" for k in TURN_KINDS) + ")",
+                name="ck_conversation_turns_kind",
+            ),
         )
 
     # ---------------- lifecycle ----------------
@@ -766,6 +820,87 @@ class DocumentRepository(ChunkStore, RetrievalStore, JobStatusSource, DocumentFa
             }
             for document_id, content_hash in docs
         ]
+
+    # ---------------- conversation memory (the ConversationStore port) ----------------
+
+    async def append_turn(self, turn: ConversationTurn) -> ConversationTurn:
+        """Append ``turn`` to its conversation. The next ordinal is computed inside the INSERT itself
+        (one statement, no read-then-write gap). Two writers appending to the *same* conversation at the
+        same instant (two processes resuming one session) can still compute the same ordinal on Postgres;
+        the primary key refuses the second, which then retries with the next one. SQLite serializes the
+        writes, so on both backends both turns are kept, in commit order."""
+        table = self.conversation_turns_table
+        next_ordinal = (
+            select(func.coalesce(func.max(table.c.ordinal), -1) + 1)
+            .where(table.c.session_id == turn.session_id)
+            .scalar_subquery()
+        )
+        created_at = datetime.now(UTC)
+        stmt = (
+            insert(table)
+            .values(
+                session_id=turn.session_id,
+                ordinal=next_ordinal,
+                kind=turn.kind,
+                question=turn.question,
+                standalone_question=turn.standalone_question,
+                answer=turn.answer,
+                grounded=self._flag(turn.grounded),
+                abstained=self._flag(turn.abstained),
+                created_at=created_at,
+            )
+            .returning(table.c.ordinal)
+        )
+        for attempt in range(1, _APPEND_ATTEMPTS + 1):
+            try:
+                async with self.engine.begin() as conn:
+                    ordinal = (await conn.execute(stmt)).scalar_one()
+                break
+            except IntegrityError as exc:
+                if attempt == _APPEND_ATTEMPTS or not _is_duplicate_key(exc):
+                    raise  # e.g. an unknown kind (the CHECK) is not retried
+        return replace(turn, ordinal=ordinal, created_at=created_at)
+
+    async def conversation_turns(
+        self, session_id: str, limit: int | None = None
+    ) -> list[ConversationTurn]:
+        """One conversation's turns, oldest first; ``limit`` keeps the most recent ``limit`` (read
+        newest-first with a LIMIT, then reversed — an indexed range scan on the primary key). ``0`` keeps
+        none; a negative ``limit`` is refused (SQLite would read it as "no limit", Postgres errors)."""
+        if limit is not None and limit < 0:
+            raise ValueError(f"limit must be >= 0 (or None for every turn), got {limit}")
+        table = self.conversation_turns_table
+        stmt = select(table).where(table.c.session_id == session_id).order_by(table.c.ordinal.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [self._row_to_turn(r) for r in reversed(rows)]
+
+    async def delete_conversation(self, session_id: str) -> int:
+        table = self.conversation_turns_table
+        async with self.engine.begin() as conn:
+            result = await conn.execute(table.delete().where(table.c.session_id == session_id))
+        return result.rowcount
+
+    @staticmethod
+    def _flag(value: bool | None) -> int | None:
+        """A tri-state verdict as its 0/1/NULL column value."""
+        return None if value is None else int(value)
+
+    @staticmethod
+    def _row_to_turn(r) -> ConversationTurn:
+        return ConversationTurn(
+            session_id=r["session_id"],
+            kind=r["kind"],
+            question=r["question"],
+            standalone_question=r["standalone_question"],
+            answer=r["answer"],
+            grounded=None if r["grounded"] is None else bool(r["grounded"]),
+            abstained=None if r["abstained"] is None else bool(r["abstained"]),
+            ordinal=r["ordinal"],
+            created_at=_as_utc(r["created_at"]),
+        )
 
     async def document_status(self, document_id: str) -> dict[str, Any] | None:
         """Convenience: status over this repo alone (job_status + data both here). The

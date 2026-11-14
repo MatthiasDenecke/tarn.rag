@@ -63,6 +63,12 @@ class GenerationPipeline(Component):
             else None
         )
 
+    @property
+    def verifies_grounding(self) -> bool:
+        """Whether answers are checked against their evidence (a ``grounding_checker`` is configured).
+        Without one, ``GenerationResult.grounded`` is ``True`` by default, not by verification."""
+        return self.config.grounding_checker is not None
+
     async def answer(self, query: Query, ctx: GenerationContext) -> GenerationResult:
         self.ensure_built()
         # Everything retrieved below grounds an LLM's answer, so it is retrieved FOR grounding — on top of
