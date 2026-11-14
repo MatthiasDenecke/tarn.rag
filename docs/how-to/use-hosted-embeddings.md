@@ -32,6 +32,14 @@ index whose fingerprint doesn't match the current settings**. Practically:
   versa — the refusal is deliberate, not a bug.
 - Keep one config per index. A config file pins the embedder and the store together, which is
   exactly what you want.
+- **Upgrading: some existing API indexes must be re-ingested once.** API embedders used to ignore
+  `EMBEDDING__QUERY_PREFIX` / `EMBEDDING__PASSAGE_PREFIX`, and their fingerprint left out the prefixes
+  and the `EMBEDDING__INJECT_HEADER_PATH` / `EMBEDDING__CONTEXTUALIZE_TABLES` flags. Now the prefixes
+  are applied, and all four join the fingerprint when set. So an index built through an API embedder
+  with any of them set refuses to open until you re-ingest it: with a prefix its vectors were built
+  without that prefix, and with a flag the old fingerprint can't show that the flag was on. The `hash`
+  embedder's fingerprint gained the two flags in the same way. An index built with all four at their
+  defaults (empty prefixes, both flags off), or with the local ONNX embedder, keeps opening unchanged.
 
 ## Notes
 

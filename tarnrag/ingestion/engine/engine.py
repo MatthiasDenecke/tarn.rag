@@ -118,49 +118,54 @@ class IngestionEngine(Engine):
         settings = settings or get_settings()
         obs = Observability.create(settings.observability)
         built = repository is None and embedder is None
-        if built:
-            repository = await DocumentRepository.create(settings.database, settings.EMBEDDING_DIMENSION)
-            embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
-        elif repository is None or embedder is None:
+        if not built and (repository is None or embedder is None):
             raise ValueError("inject both repository and embedder, or neither")
-        try:
+        queue: JobEnqueuer | None = None
+        try:  # anything below can fail (an index-identity conflict, the queue DB down): release what we built
+            if built:
+                repository = await DocumentRepository.create(settings.database, settings.EMBEDDING_DIMENSION)
+                embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
             # The engine is the index producer: establish/confirm the §8 build/identity record (the sinks
             # then persist document/chunk/embedding data into the same repository; job_status lives there).
             await cls.ensure_index_meta(repository, embedder)
-        except BaseException:
-            if built:  # an index-identity conflict: release what we just built before re-raising
-                embedder.close()
-                await repository.disconnect()
-            raise
-        pipeline = cls.build_pipeline(settings)
-        for stage in pipeline.stages:
-            if isinstance(stage, EmbedStage):
-                stage.bind_embedder(embedder)
+            pipeline = cls.build_pipeline(settings)
+            for stage in pipeline.stages:
+                if isinstance(stage, EmbedStage):
+                    stage.bind_embedder(embedder)
 
-        if settings.MODE == "distributed":
-            queue: JobEnqueuer = await PgQueuerJobQueue.connect(
-                settings.database.queue_url,
-                concurrency=settings.worker.concurrency,
-                dequeue_timeout_seconds=settings.worker.queue_timeout_seconds,
+            if settings.MODE == "distributed":
+                queue = await PgQueuerJobQueue.connect(
+                    settings.database.queue_url,
+                    concurrency=settings.worker.concurrency,
+                    dequeue_timeout_seconds=settings.worker.queue_timeout_seconds,
+                )
+                auto_drain = False
+            else:  # embedded — run the whole pipeline in this process
+                queue = InMemoryJobQueue()
+                auto_drain = True
+
+            orchestrator = PipelineOrchestrator(
+                PipelineDAG(pipeline.stages), queue, repository, create_sink_registry(),
+                observability=obs,  # chunk_store defaults to the repository
             )
-            auto_drain = False
-        else:  # embedded — run the whole pipeline in this process
-            queue = InMemoryJobQueue()
-            auto_drain = True
-
-        orchestrator = PipelineOrchestrator(
-            PipelineDAG(pipeline.stages), queue, repository, create_sink_registry(),
-            observability=obs,  # chunk_store defaults to the repository
-        )
-        engine = cls(
-            pipeline, orchestrator, repository, observability=obs,
-            staging_dir=settings.UPLOAD_DIR,  # facts_source defaults to the repository
-            queue=queue, auto_drain=auto_drain, debug=settings.app.debug,
-            id_policy=settings.ID_POLICY, embedder=embedder if built else None,
-        )
-        engine.owns_repository = built
-        if auto_drain:  # register the in-process worker that ingest() will drive
-            _attach_worker(queue, orchestrator, obs)
+            engine = cls(
+                pipeline, orchestrator, repository, observability=obs,
+                staging_dir=settings.UPLOAD_DIR,  # facts_source defaults to the repository
+                queue=queue, auto_drain=auto_drain, debug=settings.app.debug,
+                id_policy=settings.ID_POLICY, embedder=embedder if built else None,
+            )
+            engine.owns_repository = built
+            if auto_drain:  # register the in-process worker that ingest() will drive
+                _attach_worker(queue, orchestrator, obs)
+        except BaseException:
+            if (close_queue := getattr(queue, "aclose", None)) is not None:
+                await close_queue()
+            if built:  # an injected store / embedder stays the caller's
+                if embedder is not None:
+                    embedder.close()
+                if repository is not None:
+                    await repository.disconnect()
+            raise
         return engine
 
     @staticmethod
