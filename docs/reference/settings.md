@@ -85,12 +85,15 @@ Built only when a `GenerationEngine` is created — retrieval-only deployments n
 | `DATABASE__DOCUMENT_URL` | `sqlite:///./rag_docs.db` | The repository: documents, chunks, the §8 retrieval index, job status. SQLite in embedded mode, Postgres (+pgvector) in distributed. |
 | `DATABASE__QUEUE_URL` | `""` | The pgQueuer job queue — required for (and only used in) `MODE=distributed`. Never the same concern as `document_url`. |
 
-## `worker` — distributed-mode tuning
+## `worker` — worker tuning and the retry policy
 
 | Env var | Default | Description |
 |---|---|---|
 | `WORKER__QUEUE_TIMEOUT_SECONDS` | `30` | How long an idle worker waits for a job before re-polling the queue (pgQueuer's dequeue timeout). Must be > 0. |
 | `WORKER__CONCURRENCY` | `4` | Batches one worker process runs at once (stage compute runs in threads, off the event loop). Must be ≥ 1; scale out with more worker processes. Keep it at 1–2 for workers that embed with local ONNX, which already uses every core per batch ([sizing](../how-to/run-distributed-mode.md#sizing-worker__concurrency)). |
+| `WORKER__MAX_ATTEMPTS` | `3` | Runs a failing job gets in total before it is dead-lettered (status `failed`). Applies to both modes. Must be ≥ 1 (`1` = no retry). |
+| `WORKER__RETRY_DELAY_SECONDS` | `1.0` | Distributed mode: the backoff before the first retry; it doubles with each further attempt. |
+| `WORKER__RETRY_MAX_DELAY_SECONDS` | `300.0` | Distributed mode: the cap on that backoff. |
 
 ## `observability`
 

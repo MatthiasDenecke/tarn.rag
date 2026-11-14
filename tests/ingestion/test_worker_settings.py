@@ -55,6 +55,7 @@ async def test_in_flight_batches_are_capped_at_the_configured_concurrency():
 
     class _PgJob:
         payload = _job_payload()
+        attempts = 0
 
     await asyncio.gather(*(entry(_PgJob()) for _ in range(3)))
     assert peak == 1
@@ -95,8 +96,14 @@ async def test_distributed_engine_builds_its_queue_from_worker_settings(monkeypa
         _env_file=None, MODE="distributed", EMBEDDING_DIMENSION=3,
         embedding=EmbeddingSettings(provider="hash"),
         database=DatabaseSettings(document_url="postgresql://u@h/docs", queue_url="postgresql://u@h/queue"),
-        worker=WorkerSettings(concurrency=2, queue_timeout_seconds=12),
+        worker=WorkerSettings(
+            concurrency=2, queue_timeout_seconds=12, max_attempts=5, retry_delay_seconds=0.5,
+            retry_max_delay_seconds=60,
+        ),
     )
     embedder = Embedder.create(settings.embedding, settings.EMBEDDING_DIMENSION)
     await IngestionEngine.create(settings, repository=repo, embedder=embedder)  # the store is injected
-    assert captured == {"url": "postgresql://u@h/queue", "concurrency": 2, "dequeue_timeout_seconds": 12}
+    assert captured == {
+        "url": "postgresql://u@h/queue", "concurrency": 2, "dequeue_timeout_seconds": 12,
+        "max_attempts": 5, "retry_delay_seconds": 0.5, "retry_max_delay_seconds": 60,
+    }

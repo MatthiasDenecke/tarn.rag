@@ -186,16 +186,25 @@ class _OrchestratorBatchContext(BatchContext):
         self._sink.submit(results)
 
     async def fail(self, error: BaseException) -> None:
-        await self._orch._record(self._batch.jobs, "failed", str(error))
+        await self._record_failure(str(error))
         if self._orch.obs:
             self._orch.obs.counter(f"stage.{self._tag}.failed")
+
+    async def _record_failure(self, detail: str) -> None:
+        """Record a failed attempt: ``failed`` only when it's the batch's last try; otherwise the queue
+        retries it, so the jobs are ``queued`` again (with the error kept for inspection) and the
+        document reads ``in_progress`` — not a failure that later turns out to have healed."""
+        if self._batch.final_attempt:
+            await self._orch._record(self._batch.jobs, "failed", detail)
+        else:
+            await self._orch._record(self._batch.jobs, "queued", f"retrying after: {detail}")
 
     async def complete(self) -> None:
         obs = self._orch.obs
         self._sink.close()
         outcome = await self._sink.finalize()
         if not outcome.persisted:
-            await self._orch._record(self._batch.jobs, "failed", f"persistence: {outcome.detail}")
+            await self._record_failure(f"persistence: {outcome.detail}")
             if obs:
                 obs.counter(f"stage.{self._tag}.persist_failed")
                 await obs.log(
