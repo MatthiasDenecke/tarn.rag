@@ -71,6 +71,12 @@ class GenerationEngine:
         llm = LanguageModel.create(settings.llm)
         return cls.assemble(retrieval, llm, settings, owns_resources=True)
 
+    @property
+    def verifies_grounding(self) -> bool:
+        """Whether this engine's answers are checked against their evidence (see
+        :attr:`GenerationPipeline.verifies_grounding`)."""
+        return self._pipeline.verifies_grounding
+
     async def answer(self, query: Query) -> GenerationResult:
         """Answer a question: retrieve, read, and return the answer + proof tree + evidence. Retrieval is
         marked ``grounds_generation`` (the pipeline enforces it, on top of the query's own purpose), so

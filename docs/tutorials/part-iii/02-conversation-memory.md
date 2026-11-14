@@ -15,6 +15,7 @@ One line changes from [example 01](01-a-conversation-without-memory.md):
     contextualizer:
       class_name: condense  # one LLM call: resolve references, nothing else
       max_tokens: 256
+      temperature: 0.0      # pinned, so a rewrite is repeatable
 ```
 
 The other settings were already in example 01's config, inert. Nothing about retrieval or generation
@@ -64,10 +65,14 @@ ordinary query; none of them knows a conversation exists.
 ```text
 conversation
  # │ via │ asked                               │ understood as                              │ answer
- 1 │ ask │ Which frame is the TX-200 built on? │ —                                          │ ✓ Cooper-Bessemer GMV frame
- 2 │ ask │ Which oil grade does it require?    │ Which oil grade does the Cooper-Bessemer   │ ✓ ISO VG 68
+ 1 │ ask │ Which frame is the TX-200 built on? │ —                                          │ ? Cooper-Bessemer GMV frame
+ 2 │ ask │ Which oil grade does it require?    │ Which oil grade does the Cooper-Bessemer   │ ? ISO VG 68
    │     │                                     │ GMV frame require?                         │
 ```
+
+The `?` means the answer was not checked: this example's pipeline has no grounding check, so the
+layer records it as unchecked (`grounded=None`), not as grounded, and the rewriter is told so. With a
+`grounding_checker` configured, a turn shows ✓ or ✗.
 
 Each turn keeps both forms of the question: what you typed and what was actually run. A rewrite
 changes what is searched and answered, so it is never hidden — this table is `TarnRag.history()`, and
@@ -97,9 +102,11 @@ memory off.
 | `retrieve` | yes | yes — the question only |
 | `explain` | yes | **no** — a dry run |
 
-`explain` rewrites the follow-up exactly as `retrieve` would and shows the result, but leaves the
-conversation as it found it. That is what lets this example's `run.py` inspect each turn with
-`explain` before asking it for real.
+`explain` rewrites the follow-up by the same rewrite `retrieve` runs and shows the result, but leaves
+the conversation as it found it — a way to check what a follow-up will become before asking it. The
+rewrite is its own LLM call (pinned to temperature 0, so normally the same text). This example's
+`run.py` therefore doesn't use it: it plays each turn as one `ask`, reads what was searched back from
+`history`, and checks the passages the reader was actually shown.
 
 ## Sessions
 

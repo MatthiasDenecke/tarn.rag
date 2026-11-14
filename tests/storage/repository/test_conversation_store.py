@@ -5,7 +5,8 @@ each turn its position, reads a conversation back oldest-first (optionally only 
 the short-term window), keeps conversations isolated, and keeps every turn until asked to delete.
 """
 
-from datetime import datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -32,6 +33,24 @@ async def test_append_assigns_consecutive_ordinals_and_a_timestamp(repo):
     assert (first.ordinal, second.ordinal) == (0, 1)
     assert isinstance(first.created_at, datetime)
     assert first.question == "q0"  # the returned turn is the stored one, with the assigned fields filled
+
+
+async def test_timestamps_are_utc_on_the_way_in_and_out(repo):
+    """``created_at`` is written as UTC and read back timezone-aware, so it means the same on SQLite and
+    Postgres (a server default is UTC on one and the session's local time zone on the other)."""
+    before = datetime.now(UTC)
+    appended = await repo.append_turn(_ask("s", "q0"))
+    (stored,) = await repo.conversation_turns("s")
+    assert appended.created_at.tzinfo is UTC and stored.created_at.utcoffset() == timedelta(0)
+    assert stored.created_at == appended.created_at
+    assert before <= stored.created_at <= datetime.now(UTC)
+
+
+async def test_concurrent_appends_to_one_conversation_all_land(repo):
+    """Two writers on one session (two processes resuming it) each get their own ordinal, never an error."""
+    turns = await asyncio.gather(*(repo.append_turn(_ask("s", f"q{i}")) for i in range(6)))
+    assert sorted(t.ordinal for t in turns) == list(range(6))
+    assert len(await repo.conversation_turns("s")) == 6
 
 
 async def test_an_ask_turn_round_trips_every_field(repo):
@@ -106,6 +125,15 @@ async def test_turns_outside_the_window_are_kept(repo):
         await repo.append_turn(_ask("s", f"q{i}"))
     await repo.conversation_turns("s", limit=2)
     assert len(await repo.conversation_turns("s")) == 6
+
+
+async def test_limit_zero_keeps_none_and_a_negative_limit_is_refused(repo):
+    """``0`` keeps nothing; a negative limit is refused here rather than read by SQLite as "no limit"
+    (and refused by Postgres), so the two backends agree."""
+    await repo.append_turn(_ask("s", "q0"))
+    assert await repo.conversation_turns("s", limit=0) == []
+    with pytest.raises(ValueError, match="limit"):
+        await repo.conversation_turns("s", limit=-1)
 
 
 async def test_an_unknown_kind_is_refused_by_the_schema(repo):

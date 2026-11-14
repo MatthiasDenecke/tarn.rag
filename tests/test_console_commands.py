@@ -282,16 +282,18 @@ async def test_history_renders_each_turn_as_typed_as_understood_and_its_answer()
         _turn("pump seals", kind="retrieve", ordinal=2),
         _turn("warranty?", ordinal=3, answer="Not enough evidence.", grounded=False, abstained=True),
         _turn("flow rate?", ordinal=4, answer="about 40 l/min", grounded=False),
+        _turn("inlet pressure?", ordinal=5, answer="2 bar", grounded=None),  # no grounding check ran
     ]
     c = _console(FakeTarn(session_id="s1", history=Outcome(turns)))
     await c._do_history("")
     text = _text(c)
     assert "which oil does it need?" in text and "Which oil does the GMV frame need?" in text
     assert "✓ Cooper-Bessemer GMV" in text  # a grounded answer
+    assert "? 2 bar" in text and "✓ 2 bar" not in text  # an unchecked answer is not shown as grounded
     assert "(search only)" in text  # the retrieve turn has no answer
     assert "abstained" in text and "Not enough evidence." in text
     assert "✗ about 40 l/min" in text  # answered, but not fully grounded
-    assert "5 turn(s)" in text and "s1" in text
+    assert "6 turn(s)" in text and "s1" in text
 
 
 async def test_history_of_a_new_conversation_says_nothing_is_remembered():

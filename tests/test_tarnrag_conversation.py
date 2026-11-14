@@ -7,6 +7,7 @@ with memory ON the *standalone* question — not the follow-up as typed — is w
 reader receive, while the conversation itself never reaches the reader.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from tarnrag.core.engine.config import (
     Settings,
 )
 from tarnrag.core.resources.llm import Completion, LanguageModel, Prompt
+from tarnrag.storage.repository import DocumentRepository
 
 FIRST = "Which frame is the TX-200 built on?"
 FOLLOW_UP = "Which oil grade does it require?"
@@ -225,7 +227,7 @@ async def test_history_shows_each_turn_as_typed_and_as_understood(tmp_path):
         assert (first.question, first.standalone_question) == (FIRST, FIRST)  # nothing to rewrite
         assert (second.question, second.standalone_question) == (FOLLOW_UP, STANDALONE)
         assert second.kind == "ask" and second.answer == "ISO VG 68"
-        assert second.grounded is True and second.abstained is False
+        assert second.grounded is None and second.abstained is False  # no grounding check ran: unchecked
         assert (first.ordinal, second.ordinal) == (0, 1) and second.session_id == tarn.session_id
         assert [t.question for t in (await tarn.history(last=1)).value] == [FOLLOW_UP]
 
@@ -245,6 +247,27 @@ async def test_an_ungrounded_refused_answer_is_remembered_with_its_flags(tmp_pat
 
 
 # ---------------- who records ----------------
+
+
+async def test_a_checked_answer_is_remembered_grounded_and_an_unchecked_one_is_not(tmp_path):
+    """Without a grounding check, ``GenerationResult.grounded`` is True by default, not by verification —
+    so the turn records ``None`` (unchecked), and the rewriter is told so instead of shown it as reliable."""
+    checked = {"grounding_checker": {"class_name": "llm_grounding"}}
+    async with TarnRag(_settings(tmp_path / "checked", memory={}, generation=checked), llm=ScriptedLLM()) as tarn:
+        (tmp_path / "checked").mkdir(exist_ok=True)
+        await _ingest(tarn, tmp_path / "checked")
+        await tarn.ask(FIRST)
+        (turn,) = (await tarn.history()).value
+        assert turn.grounded is True  # verified
+    llm = ScriptedLLM()
+    async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
+        await _ingest(tarn, tmp_path)
+        await tarn.ask(FIRST)
+        (turn,) = (await tarn.history()).value
+        assert turn.grounded is None  # nothing verified it
+        await tarn.ask(FOLLOW_UP)
+        (rewrite,) = llm.rewrites
+        assert "A (unchecked" in rewrite.user
 
 
 async def test_retrieve_records_a_question_only_turn_that_a_later_ask_can_refer_to(tmp_path):
@@ -418,11 +441,135 @@ async def test_a_failing_rewrite_call_propagates_and_records_nothing(tmp_path):
 # ---------------- wiring ----------------
 
 
+class _GatedLLM(ScriptedLLM):
+    """A ``ScriptedLLM`` whose reader waits to be released, so a test can act while an ``ask`` is
+    mid-generation."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.reading = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, prompt: Prompt) -> Completion:
+        system = prompt.system or ""
+        if "rewrite the LATEST question" not in system and "fact-checker" not in system:
+            self.reading.set()
+            await self.release.wait()
+        return await super().complete(prompt)
+
+
+@pytest.mark.parametrize("switch", ["new_conversation", "forget"])
+async def test_a_session_switch_waits_for_the_turn_in_flight(tmp_path, switch):
+    """``new_conversation`` / ``forget`` while an ``ask`` is generating: the turn is still recorded in
+    the conversation it was resolved against, and the switch applies after it — a fresh conversation
+    starts empty, and a forgotten one stays empty."""
+    llm = _GatedLLM()
+    async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
+        await _ingest(tarn, tmp_path)
+        started_in = tarn.session_id
+        asking = asyncio.create_task(tarn.ask(FIRST))
+        await llm.reading.wait()  # the ask is mid-generation
+        switching = asyncio.create_task(getattr(tarn, switch)())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not switching.done()  # it waits for the turn in flight
+        llm.release.set()
+        await asyncio.gather(asking, switching)
+        recorded = await tarn._repository.conversation_turns(started_in)
+        if switch == "new_conversation":
+            assert [t.question for t in recorded] == [FIRST]  # recorded where it started
+            assert tarn.session_id != started_in and (await tarn.history()).value == []
+        else:
+            assert recorded == []  # forgotten after it was recorded, not resurrected by it
+
+
+async def test_concurrent_calls_on_one_facade_take_turns(tmp_path):
+    """Two ``ask``s at once on one memory-enabled facade run one after the other: the second is resolved
+    against the first's recorded turn, and both are recorded, in order."""
+    llm = ScriptedLLM()
+    async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
+        await _ingest(tarn, tmp_path)
+        await asyncio.gather(tarn.ask(FIRST), tarn.ask(FOLLOW_UP))
+        first, second = (await tarn.history()).value
+        assert (first.question, second.question) == (FIRST, FOLLOW_UP)
+        assert second.standalone_question == STANDALONE and len(llm.rewrites) == 1  # it saw the first turn
+
+
+async def test_memory_off_calls_are_not_serialized(tmp_path):
+    """Without memory there is no conversation to keep in order, so nothing is locked."""
+    llm = _GatedLLM()
+    async with TarnRag(_settings(tmp_path), llm=llm) as tarn:
+        await _ingest(tarn, tmp_path)
+        asking = asyncio.create_task(tarn.ask(FIRST))
+        await llm.reading.wait()
+        assert (await tarn.retrieve(FOLLOW_UP)).value  # runs while the ask is still generating
+        llm.release.set()
+        await asking
+
+
+@pytest.mark.parametrize("operation", ["ask", "retrieve"])
+async def test_a_failed_memory_write_returns_the_result_with_a_warning(tmp_path, monkeypatch, operation):
+    """The result is already computed when the turn is recorded, so a store error there (a lock, a lost
+    connection) is reported, not raised — the optional memory never costs the caller the answer."""
+    async with TarnRag(_settings(tmp_path, memory={}), llm=ScriptedLLM(answer="GMV")) as tarn:
+        await _ingest(tarn, tmp_path)
+
+        async def locked(turn):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(tarn._repository, "append_turn", locked)
+        outcome = await getattr(tarn, operation)(FIRST)
+        assert outcome.value  # the answer / the passages
+        (issue,) = outcome.report.issues
+        assert issue.severity is Severity.WARNING and "could not record this turn" in issue.message
+        assert "database is locked" in issue.message
+        assert (await tarn.history()).value == []
+
+
+async def test_only_a_rewrite_builds_the_llm(tmp_path, monkeypatch):
+    """Reading and recording turns, a first turn, ``history`` and ``forget`` never build the session's
+    LLM; the first follow-up that needs a rewrite builds it, once."""
+    settings = _settings(tmp_path, memory={})
+    settings.llm.api_key = "k"
+    async with TarnRag(settings) as tarn:
+        await _ingest(tarn, tmp_path)
+        built: list[LanguageModel] = []
+
+        def build(llm_settings):
+            built.append(ScriptedLLM())
+            return built[-1]
+
+        monkeypatch.setattr(LanguageModel, "create", staticmethod(build))
+        assert (await tarn.retrieve(FIRST)).report.ok  # nothing to resolve yet
+        await tarn.history()
+        assert built == []
+        await tarn.retrieve(FOLLOW_UP)
+        await tarn.retrieve("and how often is it changed?")
+        assert len(built) == 1 and len(built[0].rewrites) == 2  # built once, by the first rewrite
+        await tarn.forget()
+        assert len(built) == 1
+
+
+def test_history_refuses_a_negative_count(tmp_path):
+    with pytest.raises(ValueError, match="last"):
+        asyncio.run(TarnRag(_settings(tmp_path, memory={})).history(last=-1))
+
+
 async def test_a_bad_memory_spec_fails_at_open_and_releases_the_store(tmp_path):
     settings = _settings(tmp_path, memory={"max_turns": 0})
     tarn = TarnRag(settings)
-    with pytest.raises(ValueError, match="max_turns"):
-        await tarn.open()
+    disconnected = []
+    real_disconnect = DocumentRepository.disconnect
+
+    async def disconnect(self):
+        disconnected.append(self)
+        await real_disconnect(self)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(DocumentRepository, "disconnect", disconnect)
+        with pytest.raises(ValueError, match="max_turns"):
+            await tarn.open()
+    assert disconnected == [tarn._repository]  # the store open() connected was released
 
 
 async def test_the_llm_built_for_the_rewrite_is_closed_by_the_facade(tmp_path):
@@ -431,7 +578,9 @@ async def test_the_llm_built_for_the_rewrite_is_closed_by_the_facade(tmp_path):
     settings = _settings(tmp_path, memory={})
     settings.llm.api_key = "k"  # lets the facade construct a backend (lazily connecting — no network)
     tarn = await TarnRag(settings).open()
-    assert tarn._conversation_context().llm is tarn._llm is not None  # built once, on first need
+    context = tarn._conversation_context()
+    assert tarn._llm is None  # a context alone builds nothing
+    assert context.language_model() is tarn._llm is not None  # built once, on first need
     assert tarn._generation is None  # generation was never needed
     closed: list[str] = []
 
@@ -447,7 +596,7 @@ async def test_the_llm_built_for_the_rewrite_is_closed_by_the_facade(tmp_path):
 async def test_generation_and_the_rewrite_share_one_llm(tmp_path):
     llm = ScriptedLLM()
     async with TarnRag(_settings(tmp_path, memory={}), llm=llm) as tarn:
-        assert tarn._gen().llm is tarn._conversation_context().llm is llm
+        assert tarn._gen().llm is tarn._conversation_context().language_model() is llm
 
 
 async def test_the_switch_is_read_from_a_yaml_config(tmp_path):

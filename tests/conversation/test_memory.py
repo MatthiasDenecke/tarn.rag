@@ -26,6 +26,26 @@ def _reply(standalone: str) -> str:
 # ---------------- the first turn / the switch ----------------
 
 
+async def test_the_llm_is_built_only_when_a_follow_up_needs_a_rewrite(store, recording_llm, ask_turn):
+    """Reading and recording turns, and a first turn with nothing to resolve, never build the LLM: a
+    misconfigured one can then only fail the rewrite that needs it."""
+    built = []
+
+    def build():
+        built.append("llm")
+        return recording_llm(_reply("x"))
+
+    memory = _memory()
+    ctx = ConversationContext(store, llm_factory=build)
+    await memory.contextualize("first", "s", ctx)
+    await memory.remember(ask_turn("first"), ctx)
+    await memory.history("s", ctx)
+    assert built == []
+    await memory.contextualize("and then?", "s", ctx)
+    await memory.contextualize("and now?", "s", ctx)
+    assert built == ["llm"]  # built once, by the first rewrite
+
+
 async def test_the_first_turn_is_used_as_typed_without_an_llm_call(store, recording_llm):
     llm = recording_llm(_reply("should never be used"))
     result = await _memory().contextualize("Which frame is the TX-200 built on?", "s", ConversationContext(store, llm))

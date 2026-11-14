@@ -21,6 +21,7 @@ components:
     contextualizer:
       class_name: condense   # one LLM call that rewrites the follow-up
       max_tokens: 256
+      temperature: 0.0       # pinned, so a rewrite is repeatable
 ```
 
 Only `class_name` and `enabled: true` are required; the rest are shown at their defaults.

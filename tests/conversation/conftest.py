@@ -29,9 +29,13 @@ class InMemoryConversationStore(ConversationStore):
         return stored
 
     async def conversation_turns(self, session_id: str, limit: int | None = None) -> list[ConversationTurn]:
+        if limit is not None and limit < 0:
+            raise ValueError(f"limit must be >= 0, got {limit}")
         self.reads += 1
         turns = self.turns.get(session_id, [])
-        return list(turns if limit is None else turns[-limit:])
+        if limit is None:
+            return list(turns)
+        return turns[-limit:] if limit else []  # like the store: 0 keeps none (turns[-0:] would keep all)
 
     async def delete_conversation(self, session_id: str) -> int:
         return len(self.turns.pop(session_id, []))

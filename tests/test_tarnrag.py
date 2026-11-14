@@ -233,7 +233,8 @@ async def test_close_releases_built_resources(tmp_path):
         async def aclose(self) -> None:
             closed.append(self._name)
 
-    tarn._generation.llm = _Closable("llm")
+    assert tarn._generation.llm is tarn._llm  # generation holds the one LLM the facade built
+    tarn._llm = _Closable("llm")
     tarn._ingestion._queue = _Closable("queue")
     await tarn.close()
     assert closed == ["llm", "queue"]  # the built LLM and the engine's queue are both released

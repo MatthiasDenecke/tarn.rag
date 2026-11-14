@@ -36,8 +36,9 @@ class Contextualization:
     def annotations(self) -> list[Annotation]:
         """The annotation a query built from this carries — one ``contextualized`` finding recording the
         original wording, flagged ``deterministic=False`` (an LLM produced it; never silently trusted).
-        Empty when no contextualizer ran or it fell back: the query is then simply the question as typed."""
-        if not self.producer or self.fallback is not None:
+        Empty unless the question was actually :attr:`rewritten` — no contextualizer ran, it fell back,
+        or it returned the question unchanged — so the query is then exactly the stateless one."""
+        if not self.rewritten:
             return []
         return [
             Annotation(

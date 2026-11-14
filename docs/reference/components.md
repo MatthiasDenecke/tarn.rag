@@ -163,4 +163,4 @@ Applied by the `TarnRag` facade, not by an engine. Off unless `enabled: true`.
 
 | Tag | Component | Notes |
 |---|---|---|
-| `condense` **(default)** | `CondenseContextualizer` | One LLM call that rewrites a follow-up into a standalone question (`max_tokens`, default 256, caps the call). Not called on a conversation's first turn. Falls back to the question as typed — reported as a warning — if there is no LLM or the reply is unusable. |
+| `condense` **(default)** | `CondenseContextualizer` | One LLM call that rewrites a follow-up into a standalone question (`max_tokens`, default 256, caps the call; `temperature`, default 0.0, keeps the rewrite repeatable, and `null` uses the configured `LLM__TEMPERATURE`). Not called on a conversation's first turn. Falls back to the question as typed — reported as a warning — if there is no LLM or the reply is unusable. |

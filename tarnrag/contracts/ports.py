@@ -143,16 +143,17 @@ class ConversationStore(ABC):
     @abstractmethod
     async def append_turn(self, turn: ConversationTurn) -> ConversationTurn:
         """Persist ``turn`` at the end of its conversation; return it with the store-assigned
-        ``ordinal`` and ``created_at``. A conversation is sequential — concurrent appends to the
-        *same* ``session_id`` are not supported (different conversations never interfere)."""
+        ``ordinal`` and ``created_at`` (timezone-aware UTC). Two appends to the *same* ``session_id``
+        at once both succeed, in commit order, each with its own ordinal; different conversations
+        never interfere."""
 
     @abstractmethod
     async def conversation_turns(
         self, session_id: str, limit: int | None = None
     ) -> list[ConversationTurn]:
         """The turns of one conversation, **oldest first**. ``limit`` keeps only the most recent
-        ``limit`` turns (the short-term window); ``None`` returns the whole conversation. Empty for
-        an unknown ``session_id``."""
+        ``limit`` turns (the short-term window); ``None`` returns the whole conversation and ``0``
+        none. A negative ``limit`` raises ``ValueError``. Empty for an unknown ``session_id``."""
 
     @abstractmethod
     async def delete_conversation(self, session_id: str) -> int:

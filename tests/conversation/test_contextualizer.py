@@ -64,18 +64,28 @@ async def test_the_rewrite_call_is_capped_by_max_tokens(store, recording_llm, as
     assert llm.prompts[0].max_tokens == 64
 
 
+async def test_the_rewrite_runs_at_temperature_zero_unless_configured(store, recording_llm, ask_turn):
+    """Pinned, so a rewrite is repeatable: explain's dry run then shows what the next ask searches."""
+    llm = recording_llm(_reply("x"))
+    await _condense().contextualize("q", [ask_turn("p")], ConversationContext(store, llm))
+    await _condense(temperature=None).contextualize("q", [ask_turn("p")], ConversationContext(store, llm))
+    assert [p.temperature for p in llm.prompts] == [0.0, None]  # None → the configured LLM default
+
+
 async def test_unverified_and_refused_answers_are_marked_for_the_rewriter(store, recording_llm, ask_turn):
     llm = recording_llm(_reply("x"))
     history = [
         ask_turn("q1", "a solid answer"),
         ask_turn("q2", "a shaky answer", grounded=False),
         ask_turn("q3", "I can't answer that.", grounded=False, abstained=True),
+        ask_turn("q4", "an unchecked answer", grounded=None),  # no grounding check ran
     ]
     await _condense().contextualize("next", history, ConversationContext(store, llm))
     user = llm.prompts[0].user
     assert "A: a solid answer" in user  # a verified answer carries no marker
     assert "A (unverified" in user and "a shaky answer" in user
     assert "A (the assistant declined to answer): I can't answer that." in user
+    assert "A (unchecked - not verified against the sources): an unchecked answer" in user
 
 
 async def test_a_retrieve_turn_is_shown_as_a_search_without_an_answer(store, recording_llm):
@@ -95,6 +105,7 @@ async def test_an_already_standalone_question_comes_back_unchanged(store, record
     result = await _condense().contextualize(question, [ask_turn("p")], ConversationContext(store, llm))
     assert result.standalone == question and result.rewritten is False
     assert result.fallback is None  # the model ran and chose to keep it — not a failure
+    assert result.annotations() == []  # nothing was rewritten, so the query is exactly the stateless one
 
 
 async def test_a_reply_wrapped_in_prose_still_parses(store, recording_llm, ask_turn):

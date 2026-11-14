@@ -15,7 +15,8 @@ from examples.common import load_config
 from examples.part_iii import _conversation as conversation
 from examples.part_iii.example_01 import run as without_memory
 from examples.part_iii.example_02 import run as with_memory
-from tarnrag.core.engine.config import CONVERSATION_MEMORY
+from tarnrag import TarnRag
+from tarnrag.core.engine.config import CONVERSATION_MEMORY, EmbeddingSettings
 from tarnrag.core.resources.llm import Prompt
 
 FIRST, FOLLOW_UP = conversation.TURNS
@@ -56,6 +57,34 @@ async def test_example_02_with_memory_the_follow_up_is_rewritten_and_hits():
     assert remembered == 2
 
 
+async def test_the_narrator_plays_each_turn_as_one_ask_and_reports_that_run():
+    """Model-free (the ``hash`` embedder — no semantics, so no rank is asserted): a follow-up costs ONE
+    rewrite call, what the narrator prints as searched is what that ``ask`` recorded, and the verdict is
+    taken over the passages the reader was actually shown."""
+    settings = load_config(with_memory.CONFIG)
+    settings.embedding = EmbeddingSettings(provider="hash")
+    llm = conversation.scripted_model()
+    rewrites: list[Prompt] = []
+    complete = llm.complete
+
+    async def counting(prompt: Prompt):
+        if "standalone_question" in (prompt.system or ""):
+            rewrites.append(prompt)
+        return await complete(prompt)
+
+    llm.complete = counting
+    async with TarnRag(settings, llm=llm) as tarn:
+        narrator = conversation.Narrator(tarn, settings)
+        await narrator.ensure_corpus()
+        played = [await narrator.play(turn) for turn in conversation.TURNS]
+        recorded = (await tarn.history()).value
+    assert len(rewrites) == 1  # the follow-up only — and once, not again for a dry run
+    assert [p.searched for p in played] == [t.standalone_question for t in recorded]
+    for turn, run in zip(conversation.TURNS, played):
+        if run.rank is not None:
+            assert turn.gold.lower() in run.result.evidence[run.rank - 1].text.lower()
+
+
 # ---------------- the scripted model is bound to what it is shown (model-free) ----------------
 
 
@@ -72,6 +101,9 @@ async def test_the_scripted_rewriter_resolves_it_only_from_the_transcript_it_is_
     # No remembered answer to point at → nothing to substitute: the question comes back unchanged.
     searched_only = "[1] Q: TX-200 frame\n    (a search - no answer was recorded)"
     assert f'"{follow_up}"' in await _rewrite(searched_only, follow_up)
+    # An unchecked answer (no grounding check ran) is marked, and still resolvable.
+    unchecked = "[1] Q: Which frame?\n    A (unchecked - not verified against the sources): GMV frame"
+    assert "the GMV frame" in await _rewrite(unchecked, follow_up)
 
 
 async def test_the_scripted_reader_answers_only_from_a_passage_that_names_the_subject():

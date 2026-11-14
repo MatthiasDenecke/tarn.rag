@@ -218,9 +218,10 @@ class ConversationTurn:
     One turn of a conversation — the at-rest record the conversation layer remembers (mapped to/from
     the ``conversation_turns`` table). ``question`` is what the user typed; ``standalone_question`` is
     what was actually searched/answered (identical unless a follow-up was rewritten). An ``ask`` turn
-    also carries its ``answer`` and the generation verdicts; a ``retrieve`` turn leaves those ``None``.
-    ``ordinal`` (the 0-based position within the conversation) and ``created_at`` are assigned by the
-    store on append.
+    also carries its ``answer`` and the generation verdicts; a ``retrieve`` turn leaves those ``None``,
+    and so does an answer no grounding check verified (``grounded=None``: unchecked, not grounded).
+    ``ordinal`` (the 0-based position within the conversation) and ``created_at`` (timezone-aware UTC)
+    are assigned by the store on append.
     """
 
     session_id: str
@@ -228,7 +229,12 @@ class ConversationTurn:
     question: str  # as typed
     standalone_question: str  # as executed
     answer: str | None = None  # None for a retrieve turn
-    grounded: bool | None = None  # None for a retrieve turn
+    grounded: bool | None = None  # None for a retrieve turn, or an answer no grounding check verified
     abstained: bool | None = None  # None for a retrieve turn
     ordinal: int = -1  # assigned by the store
-    created_at: datetime | None = None  # assigned by the store
+    created_at: datetime | None = None  # assigned by the store (UTC)
+
+    @property
+    def rewritten(self) -> bool:
+        """Whether the question was executed in a different (standalone) wording than it was typed."""
+        return self.standalone_question != self.question

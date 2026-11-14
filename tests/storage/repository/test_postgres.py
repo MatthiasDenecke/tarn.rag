@@ -53,6 +53,24 @@ async def pg_repo():
     await repo.disconnect()
 
 
+async def test_concurrent_appends_to_one_conversation_all_land(pg_repo):
+    """On Postgres two concurrent appends to one session compute the same next ordinal; the primary key
+    refuses the second, which retries — so every turn lands, with distinct ordinals, as on SQLite."""
+    import asyncio
+
+    from tarnrag.contracts import ConversationTurn
+
+    def turn(i):
+        return ConversationTurn(session_id="s", kind="retrieve", question=f"q{i}", standalone_question=f"q{i}")
+
+    stored = await asyncio.gather(*(pg_repo.append_turn(turn(i)) for i in range(8)))
+    assert sorted(t.ordinal for t in stored) == list(range(8))
+    (first, *_) = await pg_repo.conversation_turns("s")
+    assert first.created_at.utcoffset().total_seconds() == 0  # read back as UTC
+    with pytest.raises(ValueError, match="limit"):
+        await pg_repo.conversation_turns("s", limit=-1)  # refused before Postgres would error
+
+
 async def _index(repo):
     """Ingest two chunks (+ embeddings): the tank chunk (a) and the quokka chunk (b)."""
     _, (a, b) = await repo.store_document_with_chunks(

@@ -265,7 +265,7 @@ class Console:
         if self._tarn.session_id is None:
             return
         turns = (await self._tarn.history(last=1)).value
-        if turns and turns[-1].question == typed and turns[-1].standalone_question != typed:
+        if turns and turns[-1].question == typed and turns[-1].rewritten:
             self._out.print(f"[magenta]↳ understood as:[/] {escape(turns[-1].standalone_question)}")
 
     # ---------------- rendering (static factory methods — reusable without a live session) ----------------
@@ -408,8 +408,9 @@ class Console:
     @staticmethod
     def create_history_view(turns: list[ConversationTurn]) -> Table:
         """The conversation so far, one row per turn: what was typed, what it was understood as (``—``
-        when it was used as typed), and the answer — marked ✓ grounded, ✗ not fully grounded, or
-        ``abstained``; a ``retrieve`` turn has no answer. Backs the ``history`` command."""
+        when it was used as typed), and the answer — marked ✓ grounded, ✗ not fully grounded, ``?`` not
+        checked (no grounding check ran), or ``abstained``; a ``retrieve`` turn has no answer. Backs the
+        ``history`` command."""
         table = Table(
             title="conversation", show_edge=False, header_style="bold", title_justify="left",
             title_style="green",
@@ -420,12 +421,11 @@ class Console:
         table.add_column("understood as")
         table.add_column("answer")
         for turn in turns:
-            rewritten = turn.standalone_question != turn.question
             table.add_row(
                 str(turn.ordinal + 1),
                 turn.kind,
                 escape(turn.question),
-                escape(turn.standalone_question) if rewritten else "[dim]—[/]",
+                escape(turn.standalone_question) if turn.rewritten else "[dim]—[/]",
                 Console._turn_answer(turn),
             )
         return table
@@ -437,16 +437,18 @@ class Console:
         answer = escape(Console._snippet(turn.answer, 70))
         if turn.abstained:
             return f"[yellow]abstained[/] {answer}"
+        if turn.grounded is None:
+            return f"[dim]?[/] {answer}"  # no grounding check ran: unchecked, not grounded
         return f"{'[green]✓[/]' if turn.grounded else '[red]✗[/]'} {answer}"
 
     @staticmethod
     def _asked(query) -> str | None:
         """The original wording of a query that conversation memory rewrote (from its
-        ``contextualized`` annotation) — ``None`` when the query is as typed."""
+        ``contextualized`` annotation, which only a rewritten query carries) — ``None`` when the query
+        is as typed."""
         for annotation in query.annotations:
-            original = annotation.value.get("original")
-            if annotation.type == CONTEXTUALIZED and original and original != query.text:
-                return original
+            if annotation.type == CONTEXTUALIZED:
+                return annotation.value.get("original")
         return None
 
     @staticmethod

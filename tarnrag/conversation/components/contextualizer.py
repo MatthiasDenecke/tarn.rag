@@ -37,7 +37,7 @@ _CONDENSE_SYSTEM = (
     "- Do NOT add facts, constraints or details that are not in the conversation.\n"
     "- Keep identifiers, part numbers and names exactly as written.\n"
     "- If the latest question is already self-contained, return it unchanged.\n"
-    "- An answer marked as unverified or declined is less reliable than the others.\n\n"
+    "- An answer marked as unverified, unchecked or declined is less reliable than the others.\n\n"
     'Reply with a SINGLE JSON object and nothing else: {"standalone_question": "<the rewritten question>"}'
 )
 
@@ -71,6 +71,9 @@ class CondenseContextualizer(QueryContextualizer):
     class Config(QueryContextualizer.Config):
         class_name: Literal["condense"] = "condense"
         max_tokens: int = Field(default=256, ge=1)  # cap on the rewrite call — a rewrite is one sentence
+        # Pinned (not the configured LLM default) so a rewrite is repeatable: explain's dry run then shows
+        # what the next retrieve / ask searches. None → the configured LLMSettings.temperature.
+        temperature: float | None = Field(default=0.0, ge=0.0)
 
     config: CondenseContextualizer.Config
 
@@ -78,13 +81,15 @@ class CondenseContextualizer(QueryContextualizer):
         self, question: str, history: list[ConversationTurn], ctx: ConversationContext
     ) -> Contextualization:
         producer = self.config.class_name
-        if ctx.llm is None:
+        llm = ctx.language_model()
+        if llm is None:
             return Contextualization(question, question, len(history), producer, fallback=NO_LLM)
-        completion = await ctx.llm.complete(
+        completion = await llm.complete(
             Prompt(
                 system=_CONDENSE_SYSTEM,
                 user=self.render(question, history),
                 max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
             )
         )
         data = extract_json(completion.text)
@@ -99,7 +104,8 @@ class CondenseContextualizer(QueryContextualizer):
         """The user prompt: the window as numbered turns, then the latest question. Each earlier turn
         shows its **standalone** question (already resolved, so a chain of references — "and for that
         one?" after "and its oil?" — stays resolvable), then its answer; an unverified or refused answer
-        is marked, and a ``retrieve`` turn is shown as a search that recorded no answer."""
+        is marked, as is one no grounding check verified (``grounded is None``), and a ``retrieve``
+        turn is shown as a search that recorded no answer."""
         lines = ["Conversation so far:"]
         for number, turn in enumerate(history, 1):
             lines.append(f"[{number}] Q: {turn.standalone_question}")
@@ -115,4 +121,6 @@ class CondenseContextualizer(QueryContextualizer):
             return f"A (the assistant declined to answer): {turn.answer}"
         if turn.grounded is False:
             return f"A (unverified - not fully supported by the sources): {turn.answer}"
+        if turn.grounded is None:
+            return f"A (unchecked - not verified against the sources): {turn.answer}"
         return f"A: {turn.answer}"

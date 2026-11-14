@@ -124,3 +124,4 @@ components:
     contextualizer:
       class_name: condense   # one LLM call: resolve references only — never answer, never add facts
       max_tokens: 256        # cap on the rewrite call (a rewrite is one sentence)
+      temperature: 0.0       # pinned, so a rewrite is repeatable (explain shows what ask runs)

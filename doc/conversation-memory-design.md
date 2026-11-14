@@ -92,7 +92,9 @@ ask(text)        contextualize → GenerationEngine.answer(Query)  → remember 
 | `retrieve` | yes | yes | question as typed, standalone question (no answer) |
 | `explain` | yes | **no** | — a diagnostic shows what `retrieve` would search without changing state |
 
-Every `ask` turn stores its answer, including ungrounded and refused ones, with their flags (§9 D8).
+Every `ask` turn stores its answer, including ungrounded and refused ones, with their flags (§9 D8). An
+answer no grounding check verified (the pipeline has no `grounding_checker`) is stored with
+`grounded=None`, unchecked rather than grounded, and the rewriter is shown it as unchecked.
 
 ## 3. The seams
 
@@ -142,11 +144,12 @@ class CondenseContextualizer(QueryContextualizer):         # class_name: "conden
     class Config(QueryContextualizer.Config):
         class_name: Literal["condense"] = "condense"
         max_tokens: int = Field(256, ge=1)   # cap on the rewrite call — a rewrite is one sentence
+        temperature: float | None = Field(0.0, ge=0.0)   # pinned: explain's dry run shows what ask runs
 ```
 
 `condense` makes one `LanguageModel.complete` call. The prompt lays out the window as numbered turns
 (each turn's **standalone** question, so references resolve transitively across turns; its answer, cut
-to `max_answer_chars` and marked when it was unverified or a refusal; a `retrieve` turn is shown as a
+to `max_answer_chars` and marked when it was unverified, unchecked or a refusal; a `retrieve` turn is shown as a
 search with no answer) followed by the latest question. The instruction: resolve references only, do
 not answer, add no facts that are not in the conversation, keep identifiers and names verbatim, return
 the question unchanged if it is already self-contained. The reply is a single JSON object
@@ -178,10 +181,10 @@ class ConversationTurn:                                    # tarnrag/contracts/d
     question: str                       # as typed
     standalone_question: str            # as executed
     answer: str | None = None           # None for a retrieve turn
-    grounded: bool | None = None        # None for a retrieve turn
+    grounded: bool | None = None        # None for a retrieve turn, or an answer no check verified
     abstained: bool | None = None
     ordinal: int = -1                   # position in the conversation, assigned by the store
-    created_at: datetime | None = None  # assigned by the store
+    created_at: datetime | None = None  # assigned by the store (timezone-aware UTC)
 
 class ConversationStore(ABC):                              # tarnrag/contracts/ports.py
     async def append_turn(self, turn: ConversationTurn) -> ConversationTurn: ...
@@ -202,7 +205,7 @@ CRUD (no dialect hook is needed, so SQLite and Postgres behave identically):
 | `standalone_question` | TEXT | as executed |
 | `answer` | TEXT NULL | |
 | `grounded`, `abstained` | INTEGER NULL | 0/1 |
-| `created_at` | TIMESTAMP | server default, like `job_status` |
+| `created_at` | TIMESTAMP WITH TIME ZONE | written as UTC by `append_turn` (a server default would be UTC on SQLite but the session's time zone on Postgres) |
 
 - **Not part of the §8 index.** Like `job_status`, it is a Python-side table living in the same store.
   The C++ reader reads only the tables it knows.
@@ -213,9 +216,11 @@ CRUD (no dialect hook is needed, so SQLite and Postgres behave identically):
   rewriter but stay in the table until `forget()` deletes that conversation. Consequence, accepted:
   question and answer text accumulates inside the index file, so a copied or shipped index carries its
   conversations with it.
-- **A conversation is sequential.** `append_turn` assigns the next ordinal in a single statement; two
-  writers appending to the *same* conversation at the same instant are not supported (the PK rejects
-  the loser). Different conversations never interfere.
+- **A conversation is sequential.** `append_turn` assigns the next ordinal in a single statement. Two
+  writers appending to the *same* conversation at the same instant (two processes resuming one
+  session) can compute the same ordinal on Postgres; the PK refuses the second, which retries with the
+  next ordinal, so on both backends both turns are kept in commit order. Different conversations
+  never interfere. Within one `TarnRag`, calls take turns (§5).
 - **Deleting a document does not edit conversations.** A remembered answer is text, not a reference;
   it can outlive the document it came from. `forget()` is the remedy.
 
@@ -229,6 +234,11 @@ One `TarnRag` instance is one conversation (§9 D6). Its identity on `open()` (�
 
 So a new process starts clean by default, and resumes a stored conversation only when asked to. With
 memory disabled there is no session (`tarn.session_id is None`).
+
+With memory on, a `retrieve` / `explain` / `ask` holds the facade's turn lock from reading the window
+to recording the turn, and `new_conversation` / `forget` take it too. So concurrent calls on one
+facade run one after another, each resolved against the turns before it and recorded in the
+conversation it started in; a session switch never lands mid-turn. With memory off nothing is locked.
 
 Accepted consequences: one facade instance serves one conversation at a time; a script that asks
 unrelated questions through one memory-enabled `TarnRag` will have them read as one conversation
@@ -265,6 +275,8 @@ retrieval-only session with memory on therefore needs no key until its first fol
 | The model's reply is not the expected JSON, or the rewritten question is empty | The question is used as typed; WARNING in the report. |
 | The LLM call itself raises (transport, auth) | The error propagates — a misconfiguration fails loudly, as `multi_query` / `hyde` do. |
 | `history` / `forget` / `new_conversation` while memory is off | An empty value plus a WARNING that memory is disabled — not a silent no-op. |
+| Recording the turn fails (a store error after `ask` / `retrieve` finished) | The finished result is returned; the report carries a WARNING that the turn was not recorded, so a follow-up won't see it. The memory is optional, so it never costs the caller a computed answer. |
+| The LLM is misconfigured (e.g. an unknown provider) | Only a rewrite builds it, so first turns, `history`, `forget` and recording are unaffected; the first follow-up that needs a rewrite fails loudly. |
 
 **Console** — three new commands, and the rewrite made visible:
 
@@ -294,6 +306,7 @@ components:
     contextualizer:
       class_name: condense
       max_tokens: 256
+      temperature: 0.0
 ```
 
 The spec validates as a whole tree with the rest (an unknown option, `max_turns: 0`, or a foreign

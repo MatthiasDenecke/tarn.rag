@@ -5,7 +5,8 @@ differs (``conversation_memory.enabled``). So everything that is not the lesson 
 
 - :data:`TURNS` — the conversation and, per turn, the phrase and document that hold the answer.
 - :class:`Narrator` — plays a turn and prints what happened: the query actually searched, a
-  **model-free** check of where the passage holding the answer ranked, and the answer.
+  **model-free** check of where the passage holding the answer ranked among the passages the reader
+  was shown, and the answer.
 - :func:`scripted_model` — the offline stand-in for the LLM (see below).
 
 **About the scripted model.** These examples run without an API key: ``run.py`` injects a
@@ -66,7 +67,7 @@ class Played:
 
     asked: str  # the question as typed
     searched: str  # the query retrieval actually ran (== asked unless memory rewrote it)
-    rank: int | None  # 1-based rank of the passage holding the answer; None = not in the reader's top-k
+    rank: int | None  # 1-based rank of the answer's passage among those the reader was shown; None = not shown
     result: GenerationResult
 
 
@@ -79,8 +80,8 @@ class Narrator:
         self._tarn = tarn
         self._runner = Runner(tarn)
         self._out = RichConsole()
-        # Check retrieval at the SAME depth the reader reads at — so "not in the top k" means exactly
-        # "the reader was never shown it".
+        # The depth the reader reads at (for the printout): the verdict is taken over the passages the
+        # reader was actually shown, so "not in the top k" means exactly "the reader was never shown it".
         self._top_k = settings.components[GENERATION_PIPELINE]["reasoner"]["top_k"]
 
     def banner(self, title: str, **lines: str | None) -> None:
@@ -90,19 +91,22 @@ class Narrator:
         await self._runner.ensure_corpus(*(corpus(name) for name in CORPORA))
 
     async def play(self, turn: Turn) -> Played:
-        """One turn: (1) a dry-run ``explain`` — what would be searched, and the model-free check of
-        where the answer's passage ranks; (2) the real ``ask``. ``explain`` records nothing, so the
-        dry run does not disturb the conversation it is inspecting."""
+        """One turn, as a single ``ask`` (so a follow-up is rewritten once, and everything printed is
+        about that one run): what it searched — the standalone question the turn recorded, read back
+        through ``history`` (as typed when memory is off) — then the model-free check of where the
+        answer's passage ranked among the passages the reader was shown (the result's ``evidence``,
+        in retrieval order), then the answer."""
         self._out.print(Rule(f"[bold cyan]you ›[/] {turn.question}", align="left", style="cyan"))
 
-        trace = (await self._tarn.explain(turn.question, top_k=self._top_k)).value
-        searched = trace.query.text
+        result = (await self._tarn.ask(turn.question)).value
+        recorded = (await self._tarn.history(last=1)).value  # empty when memory is off
+        searched = recorded[-1].standalone_question if recorded else turn.question
         note = "as typed" if searched == turn.question else "rewritten against the conversation"
         self._out.print(f"[bold]searched[/]  {searched}  [dim]({note})[/]")
-        documents = [result.document_id for result in trace.results]
+        documents = [passage.document_id for passage in result.evidence]
         self._out.print(f"[bold]top {self._top_k}[/]     " + "  ·  ".join(documents))
         rank = next(
-            (i for i, result in enumerate(trace.results, 1) if turn.gold.lower() in result.text.lower()),
+            (i for i, passage in enumerate(result.evidence, 1) if turn.gold.lower() in passage.text.lower()),
             None,
         )
         if rank is None:
@@ -112,8 +116,6 @@ class Narrator:
             )
         else:
             self._out.print(f"[green]HIT [/]  the passage holding {turn.gold!r} ({turn.document}) is rank {rank}")
-
-        result = (await self._tarn.ask(turn.question)).value
         self._out.print(View.create_answer_view(result))
         return Played(asked=turn.question, searched=searched, rank=rank, result=result)
 
@@ -157,7 +159,8 @@ def _rewrite(user: str) -> str:
     """Resolve ``it`` in the latest question to the most recent answer in the transcript shown."""
     transcript, _, question = user.rpartition("Latest question: ")
     question = question.strip()
-    answers = re.findall(r"^\s+A: (.+)$", transcript, re.MULTILINE)
+    # An answer line is "A: …", or "A (<marker>): …" when it was unverified / unchecked / declined.
+    answers = re.findall(r"^\s+A(?: \([^)]*\))?: (.+)$", transcript, re.MULTILINE)
     if answers and _PRONOUN.search(question):
         question = _PRONOUN.sub(f"the {answers[-1].strip()}", question, count=1)
     return json.dumps({"standalone_question": question})
